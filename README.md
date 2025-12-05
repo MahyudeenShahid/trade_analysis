@@ -4,6 +4,9 @@
 From a PowerShell prompt in the project root:
 
 ```powershell
+
+git pull
+
 python -m venv .venv
 
 & .venv\Scripts\Activate.ps1
