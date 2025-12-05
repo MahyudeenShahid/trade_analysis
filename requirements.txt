@@ -1,0 +1,15 @@
+fastapi>=0.95
+uvicorn[standard]>=0.22
+python-multipart>=0.0.6
+aiofiles>=23.1.0
+Pillow>=9.0
+numpy>=1.23
+opencv-contrib-python>=4.7.0
+scipy>=1.9
+pywin32>=304
+psutil>=5.9
+
+# Notes:
+# - `opencv-contrib-python` includes OpenCV extra modules used by the chart detector
+# - `pywin32` is required for the `win32gui`/`win32ui` APIs on Windows
+# - Some modules (chart line detector, cv2) are used lazily; remove any you don't need
