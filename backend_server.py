@@ -572,7 +572,7 @@ def api_history(
     start_ts: Optional[str] = None,
     end_ts: Optional[str] = None,
     trend: Optional[str] = None,
-    limit: Optional[int] = 100,
+    limit: Optional[int] = None,
 ):
     params: List[object] = []
     clauses: List[str] = []
@@ -598,8 +598,15 @@ def api_history(
         params.append(trend)
 
     where = " AND ".join(clauses) if clauses else "1=1"
-    sql = f"SELECT * FROM records WHERE {where} ORDER BY ts DESC LIMIT ?"
-    params.append(int(limit) if limit is not None else 100)
+    # If `limit` is provided, apply LIMIT clause. Otherwise return all
+    # matching records (e.g. all trades from the last `days`). This
+    # ensures the API can return all trades for the last 7 days when
+    # the caller doesn't specify a limit.
+    if limit is None:
+        sql = f"SELECT * FROM records WHERE {where} ORDER BY ts DESC"
+    else:
+        sql = f"SELECT * FROM records WHERE {where} ORDER BY ts DESC LIMIT ?"
+        params.append(int(limit))
 
     rows = query_records(sql, tuple(params))
     for r in rows:
