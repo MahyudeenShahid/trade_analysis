@@ -5,7 +5,7 @@ From a PowerShell prompt in the project root:
 
 
 ```powershell
-git pull
+git pull https://github.com/MahyudeenShahid/trade_analysis.git
 
 python -m venv .venv
 & .venv\Scripts\Activate.ps1
