@@ -1,0 +1,13 @@
+___pycache__
+*.pyc
+.env
+instance
+.vscode
+.DS_Store
+.venv
+__pypackages__  
+client_backend.sqlite3
+client_backend.db
+migrations/__pycache__
+migrations/*.pyc
+backend_data.db

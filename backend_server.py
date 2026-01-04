@@ -73,20 +73,42 @@ def get_latest_record():
     return rows[0] if rows else None
 
 
-app.add_middleware(
-  CORSMiddleware,
-  allow_origins=[
-    "https://brilliant-lollipop-2620b1.netlify.app",
-    "https://electrotropic-uselessly-lashawna.ngrok-free.dev",
-        "http://localhost:3000",
-        "http://localhost:5173",
-        "http://127.0.0.1:5173",
-        "http://127.0.0.1:3000"
-  ],  # for quick testing you can use ["*"]
-  allow_credentials=True,
-  allow_methods=["*"],
-  allow_headers=["*"],
-)
+# CORS configuration: allow listing for production, with a DEV override
+_dev_allow_all = os.environ.get("DEV_ALLOW_ALL_CORS", "0") in ("1", "true", "True")
+# Optional comma-separated origins for dev (e.g. "https://marketview1.netlify.app,http://localhost:5173")
+_dev_allow_origins = os.environ.get("DEV_ALLOW_ORIGINS")
+if _dev_allow_all:
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["*"],
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+else:
+    if _dev_allow_origins:
+        # split and strip
+        try:
+            origins = [o.strip() for o in _dev_allow_origins.split(",") if o.strip()]
+        except Exception:
+            origins = []
+    else:
+        origins = [
+            "https://brilliant-lollipop-2620b1.netlify.app",
+            "https://electrotropic-uselessly-lashawna.ngrok-free.dev",
+            "http://localhost:3000",
+            "http://localhost:5173",
+            "http://127.0.0.1:5173",
+            "http://127.0.0.1:3000",
+        ]
+
+    app.add_middleware(
+      CORSMiddleware,
+      allow_origins=origins,
+      allow_credentials=True,
+      allow_methods=["*"],
+      allow_headers=["*"],
+    )
 
 
 @app.middleware("http")

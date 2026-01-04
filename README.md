@@ -13,6 +13,7 @@ python -m venv .venv
 python -m pip install --upgrade pip
 pip install -r requirements.txt
 
+$env:DEV_ALLOW_ORIGINS = "https://marketview1.netlify.app"
 python -m uvicorn backend_server:app --host 0.0.0.0 --port 8000 --reload
 
 ```
