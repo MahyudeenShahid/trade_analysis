@@ -97,6 +97,7 @@ else:
             "https://brilliant-lollipop-2620b1.netlify.app",
             "https://electrotropic-uselessly-lashawna.ngrok-free.dev",
             "http://localhost:3000",
+            "https://marketview1.netlify.app",
             "http://localhost:5173",
             "http://127.0.0.1:5173",
             "http://127.0.0.1:3000",
