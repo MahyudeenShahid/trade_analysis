@@ -7,7 +7,7 @@ import sqlite3
 
 from fastapi import APIRouter, Depends, HTTPException
 from api.dependencies import require_api_key
-from db.queries import query_records
+from db.queries import query_records, get_bot_db_entry, upsert_bot_settings
 from db.connection import DB_LOCK, DB_PATH
 from services.capture_manager import manager_services
 
@@ -33,6 +33,40 @@ def api_bots(_auth: bool = Depends(require_api_key)):
             except Exception:
                 r['meta'] = {}
         return rows
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/bots/{hwnd}")
+def api_bot(hwnd: int, _auth: bool = Depends(require_api_key)):
+    """Get a single bot row by hwnd."""
+    try:
+        row = get_bot_db_entry(int(hwnd))
+        if not row:
+            raise HTTPException(status_code=404, detail="bot not found")
+        return row
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/bots/upsert")
+def api_bot_upsert(payload: dict, _auth: bool = Depends(require_api_key)):
+    """Create/update a bot row, including Rule #1 settings."""
+    try:
+        if not isinstance(payload, dict):
+            raise HTTPException(status_code=400, detail="payload must be an object")
+        hwnd = payload.get('hwnd')
+        if hwnd is None:
+            raise HTTPException(status_code=400, detail="hwnd is required")
+        upsert_bot_settings(int(hwnd), payload)
+        row = get_bot_db_entry(int(hwnd))
+        return {"ok": True, "bot": row}
+    except ValueError as ve:
+        raise HTTPException(status_code=400, detail=str(ve))
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

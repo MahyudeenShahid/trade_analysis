@@ -24,7 +24,7 @@ async def broadcaster_loop():
     from services.capture_manager import manager_services
     from services.background_service import service
     from trading.simulator import trader
-    from db.queries import upsert_bot_from_last_result
+    from db.queries import upsert_bot_from_last_result, get_bot_db_entry
     
     while True:
         try:
@@ -49,13 +49,39 @@ async def broadcaster_loop():
                         except Exception:
                             image_b64 = None
 
+                    # pull persisted bot settings and apply Rule #1 override when enabled
+                    bot_info = None
+                    try:
+                        bot_info = get_bot_db_entry(int(hwnd))
+                    except Exception:
+                        bot_info = None
+
                     # update trader auto signals if worker produced price/ticker
                     try:
                         trend = last.get('trend') or ''
                         price = last.get('price') or last.get('price_value') or None
                         ticker = last.get('ticker') or None
                         if price and ticker:
-                            trader.on_signal(trend, price, ticker, auto=True)
+                            rule_enabled = False
+                            tp_amount = None
+                            try:
+                                if bot_info and isinstance(bot_info, dict):
+                                    rule_enabled = bool(bot_info.get('rule_1_enabled'))
+                                    tp_amount = bot_info.get('take_profit_amount')
+                            except Exception:
+                                rule_enabled = False
+                                tp_amount = None
+
+                            if rule_enabled:
+                                # Rule #1 overrides sell logic: sell only on take-profit.
+                                # Buys are still allowed so the bot can enter positions.
+                                try:
+                                    trader.on_signal_take_profit_mode(trend, price, ticker, tp_amount, auto=True)
+                                except Exception:
+                                    # best-effort; do not break loop
+                                    pass
+                            else:
+                                trader.on_signal(trend, price, ticker, auto=True)
                     except Exception:
                         pass
 
@@ -64,6 +90,7 @@ async def broadcaster_loop():
                         'status': st or {},
                         'screenshot_b64': image_b64,
                         'last_result': last,
+                        'bot': bot_info,
                     })
 
                     # Persist summary info about this worker into bots table
@@ -89,13 +116,42 @@ async def broadcaster_loop():
                 if img_path and os.path.exists(img_path):
                     with open(img_path, 'rb') as f:
                         image_b64 = base64.b64encode(f.read()).decode('ascii')
-                # update trader auto signals for legacy service
+                # update trader auto signals for legacy service (Rule #1 override supported)
                 try:
                     trend = last.get('trend') or ''
                     price = last.get('price') or last.get('price_value') or None
                     ticker = last.get('ticker') or None
+                    legacy_hwnd = None
+                    try:
+                        legacy_hwnd = getattr(service, 'target_hwnd', None)
+                    except Exception:
+                        legacy_hwnd = None
+
+                    bot_info = None
+                    if legacy_hwnd is not None:
+                        try:
+                            bot_info = get_bot_db_entry(int(legacy_hwnd))
+                        except Exception:
+                            bot_info = None
+
                     if price and ticker:
-                        trader.on_signal(trend, price, ticker, auto=True)
+                        rule_enabled = False
+                        tp_amount = None
+                        try:
+                            if bot_info and isinstance(bot_info, dict):
+                                rule_enabled = bool(bot_info.get('rule_1_enabled'))
+                                tp_amount = bot_info.get('take_profit_amount')
+                        except Exception:
+                            rule_enabled = False
+                            tp_amount = None
+
+                        if rule_enabled:
+                            try:
+                                trader.on_signal_take_profit_mode(trend, price, ticker, tp_amount, auto=True)
+                            except Exception:
+                                pass
+                        else:
+                            trader.on_signal(trend, price, ticker, auto=True)
                 except Exception:
                     pass
             except Exception:

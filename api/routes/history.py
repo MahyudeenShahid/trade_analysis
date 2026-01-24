@@ -21,6 +21,7 @@ router = APIRouter(prefix="", tags=["history"])
 @router.post("/ingest")
 async def ingest(
     file: UploadFile = File(...),
+    hwnd: Optional[int] = Form(None),
     name: Optional[str] = Form(None),
     ticker: Optional[str] = Form(None),
     price: Optional[str] = Form(None),
@@ -62,9 +63,33 @@ async def ingest(
     # Persist in DB
     save_observation(record)
 
-    # Trigger trade automatically for this ticker
+    # Trigger trade automatically for this ticker (Rule #1 override when hwnd is known)
     if price and trend and ticker:
-        trader.on_signal(trend, price, ticker, auto=True)
+        try:
+            rule_enabled = False
+            tp_amount = None
+            if hwnd is not None:
+                try:
+                    from db.queries import get_bot_db_entry
+                    bot = get_bot_db_entry(int(hwnd))
+                    if bot and isinstance(bot, dict):
+                        rule_enabled = bool(bot.get('rule_1_enabled'))
+                        tp_amount = bot.get('take_profit_amount')
+                except Exception:
+                    rule_enabled = False
+                    tp_amount = None
+
+            if rule_enabled:
+                try:
+                    # Rule #1: sell only on take-profit; buys still allowed.
+                    trader.on_signal_take_profit_mode(trend, price, ticker, tp_amount, auto=True)
+                except Exception:
+                    pass
+            else:
+                trader.on_signal(trend, price, ticker, auto=True)
+        except Exception:
+            # best-effort; ingest should still succeed
+            pass
 
     return {"id": uuid.uuid4().hex, "image_url": f"/uploads/{filename}", "ts": ts}
 

@@ -42,6 +42,7 @@ def init_db():
             sell_price REAL,
             buy_time TEXT,
             sell_time TEXT,
+            win_reason TEXT,
             meta TEXT
         )
         """
@@ -55,6 +56,7 @@ def init_db():
         ("sell_price", "REAL"),
         ("buy_time", "TEXT"),
         ("sell_time", "TEXT"),
+        ("win_reason", "TEXT"),
     ]
     for col, typ in additions:
         if col not in existing:
@@ -90,10 +92,29 @@ def init_db():
             open_direction TEXT,
             open_price REAL,
             open_time TEXT,
+            rule_1_enabled INTEGER,
+            take_profit_amount REAL,
             meta TEXT
         )
         """
     )
+
+    # Migration: ensure new columns exist in bots
+    try:
+        cur.execute("PRAGMA table_info(bots)")
+        existing_bots = [r[1] for r in cur.fetchall()]
+        bot_additions = [
+            ("rule_1_enabled", "INTEGER"),
+            ("take_profit_amount", "REAL"),
+        ]
+        for col, typ in bot_additions:
+            if col not in existing_bots:
+                try:
+                    cur.execute(f"ALTER TABLE bots ADD COLUMN {col} {typ}")
+                except Exception:
+                    pass
+    except Exception:
+        pass
     
     conn.commit()
     conn.close()

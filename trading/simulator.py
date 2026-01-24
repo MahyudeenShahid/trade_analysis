@@ -35,6 +35,7 @@ def persist_trade_as_record(trade: dict):
         sell_price = trade.get("sell_price") or meta.get("exit_price") or None
         buy_time = trade.get("buy_time") or meta.get("entry_time") or None
         sell_time = trade.get("sell_time") or meta.get("exit_time") or None
+        win_reason = trade.get("win_reason") or (meta.get("win_reason") if isinstance(meta, dict) else None)
 
         # If the trade uses a generic `price` and `ts` fields (common shape),
         # infer buy/sell values from them based on direction when explicit
@@ -159,12 +160,13 @@ def persist_trade_as_record(trade: dict):
 
                         # Perform update: set buy_price, buy_time, sell_price, sell_time, meta
                         cur.execute(
-                            "UPDATE records SET buy_price = ?, buy_time = ?, sell_price = ?, sell_time = ?, meta = ? WHERE id = ?",
+                            "UPDATE records SET buy_price = ?, buy_time = ?, sell_price = ?, sell_time = ?, win_reason = ?, meta = ? WHERE id = ?",
                             (
                                 db_buy_price,
                                 db_buy_time,
                                 sell_price,
                                 sell_time or ts,
+                                win_reason,
                                 json.dumps(merged_meta),
                                 rec_id,
                             ),
@@ -188,6 +190,7 @@ def persist_trade_as_record(trade: dict):
             "sell_price": sell_price,
             "buy_time": buy_time,
             "sell_time": sell_time,
+            "win_reason": win_reason,
             "meta": trade,
         }
         # If both buy and sell price are known, compute profit and include in meta
