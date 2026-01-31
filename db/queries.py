@@ -143,7 +143,7 @@ def upsert_bot_from_last_result(hwnd: int, last: dict):
                 )
             else:
                 cur.execute(
-                    "INSERT INTO bots (hwnd, name, ticker, total_pnl, open_direction, open_price, open_time, rule_1_enabled, take_profit_amount, meta) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    "INSERT INTO bots (hwnd, name, ticker, total_pnl, open_direction, open_price, open_time, rule_1_enabled, rule_2_enabled, rule_3_enabled, take_profit_amount, stop_loss_amount, rule_3_drop_count, meta) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     (
                         hwnd,
                         name,
@@ -153,7 +153,11 @@ def upsert_bot_from_last_result(hwnd: int, last: dict):
                         float(open_price) if open_price is not None else None,
                         open_time,
                         0,
+                        0,
+                        0,
                         0.0,
+                        0.0,
+                        0,
                         json.dumps(meta) if isinstance(meta, dict) else json.dumps({}),
                     ),
                 )
@@ -164,7 +168,7 @@ def upsert_bot_from_last_result(hwnd: int, last: dict):
 
 
 def upsert_bot_settings(hwnd: int, settings: dict):
-    """Upsert per-bot settings (including Rule #1 fields) without clobbering runtime fields."""
+    """Upsert per-bot settings (including Rule #1/#2 fields) without clobbering runtime fields."""
     try:
         hwnd = int(hwnd)
     except Exception:
@@ -177,16 +181,34 @@ def upsert_bot_settings(hwnd: int, settings: dict):
     ticker = settings.get('ticker')
 
     rule_1_enabled = settings.get('rule_1_enabled')
+    rule_2_enabled = settings.get('rule_2_enabled')
+    rule_3_enabled = settings.get('rule_3_enabled')
     take_profit_amount = settings.get('take_profit_amount')
+    stop_loss_amount = settings.get('stop_loss_amount')
+    rule_3_drop_count = settings.get('rule_3_drop_count')
 
     # Normalize
     if rule_1_enabled is not None:
         rule_1_enabled = 1 if bool(rule_1_enabled) else 0
+    if rule_2_enabled is not None:
+        rule_2_enabled = 1 if bool(rule_2_enabled) else 0
+    if rule_3_enabled is not None:
+        rule_3_enabled = 1 if bool(rule_3_enabled) else 0
     if take_profit_amount is not None:
         try:
             take_profit_amount = float(take_profit_amount)
         except Exception:
             take_profit_amount = None
+    if stop_loss_amount is not None:
+        try:
+            stop_loss_amount = float(stop_loss_amount)
+        except Exception:
+            stop_loss_amount = None
+    if rule_3_drop_count is not None:
+        try:
+            rule_3_drop_count = int(rule_3_drop_count)
+        except Exception:
+            rule_3_drop_count = None
 
     # Optional meta merge
     meta = settings.get('meta')
@@ -225,7 +247,11 @@ def upsert_bot_settings(hwnd: int, settings: dict):
                     name = COALESCE(?, name),
                     ticker = COALESCE(?, ticker),
                     rule_1_enabled = COALESCE(?, rule_1_enabled),
+                    rule_2_enabled = COALESCE(?, rule_2_enabled),
+                    rule_3_enabled = COALESCE(?, rule_3_enabled),
                     take_profit_amount = COALESCE(?, take_profit_amount),
+                    stop_loss_amount = COALESCE(?, stop_loss_amount),
+                    rule_3_drop_count = COALESCE(?, rule_3_drop_count),
                     meta = ?
                 WHERE hwnd = ?
                 """,
@@ -233,7 +259,11 @@ def upsert_bot_settings(hwnd: int, settings: dict):
                     name,
                     ticker,
                     rule_1_enabled,
+                    rule_2_enabled,
+                    rule_3_enabled,
                     take_profit_amount,
+                    stop_loss_amount,
+                    rule_3_drop_count,
                     json.dumps(merged_meta) if isinstance(merged_meta, dict) else json.dumps({}),
                     hwnd,
                 ),
@@ -241,15 +271,19 @@ def upsert_bot_settings(hwnd: int, settings: dict):
         else:
             cur.execute(
                 """
-                INSERT INTO bots (hwnd, name, ticker, total_pnl, open_direction, open_price, open_time, rule_1_enabled, take_profit_amount, meta)
-                VALUES (?, ?, ?, NULL, NULL, NULL, NULL, ?, ?, ?)
+                INSERT INTO bots (hwnd, name, ticker, total_pnl, open_direction, open_price, open_time, rule_1_enabled, rule_2_enabled, rule_3_enabled, take_profit_amount, stop_loss_amount, rule_3_drop_count, meta)
+                VALUES (?, ?, ?, NULL, NULL, NULL, NULL, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     hwnd,
                     name,
                     ticker,
                     rule_1_enabled if rule_1_enabled is not None else 0,
+                    rule_2_enabled if rule_2_enabled is not None else 0,
+                    rule_3_enabled if rule_3_enabled is not None else 0,
                     take_profit_amount if take_profit_amount is not None else 0.0,
+                    stop_loss_amount if stop_loss_amount is not None else 0.0,
+                    rule_3_drop_count if rule_3_drop_count is not None else 0,
                     json.dumps(merged_meta) if isinstance(merged_meta, dict) else json.dumps({}),
                 ),
             )

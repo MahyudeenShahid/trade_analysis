@@ -22,15 +22,11 @@ async def broadcaster_loop():
     """
     # Import here to avoid circular imports
     from services.capture_manager import manager_services
-    from services.background_service import service
     from trading.simulator import trader
     from db.queries import upsert_bot_from_last_result, get_bot_db_entry
     
     while True:
         try:
-            # collect single-service status (backwards-compatible)
-            status = service.get_status()
-
             # collect per-worker statuses and screenshots
             workers_payload = []
             try:
@@ -61,27 +57,39 @@ async def broadcaster_loop():
                         trend = last.get('trend') or ''
                         price = last.get('price') or last.get('price_value') or None
                         ticker = last.get('ticker') or None
-                        if price and ticker:
+                        if price is not None and ticker:
                             rule_enabled = False
+                            rule2_enabled = False
+                            rule3_enabled = False
                             tp_amount = None
+                            sl_amount = None
+                            rule3_drop = None
                             try:
                                 if bot_info and isinstance(bot_info, dict):
                                     rule_enabled = bool(bot_info.get('rule_1_enabled'))
+                                    rule2_enabled = bool(bot_info.get('rule_2_enabled'))
+                                    rule3_enabled = bool(bot_info.get('rule_3_enabled'))
                                     tp_amount = bot_info.get('take_profit_amount')
+                                    sl_amount = bot_info.get('stop_loss_amount')
+                                    rule3_drop = bot_info.get('rule_3_drop_count')
                             except Exception:
                                 rule_enabled = False
+                                rule2_enabled = False
+                                rule3_enabled = False
                                 tp_amount = None
+                                sl_amount = None
+                                rule3_drop = None
 
                             if rule_enabled:
                                 # Rule #1 overrides sell logic: sell only on take-profit.
                                 # Buys are still allowed so the bot can enter positions.
                                 try:
-                                    trader.on_signal_take_profit_mode(trend, price, ticker, tp_amount, auto=True)
+                                    trader.on_signal_take_profit_mode(trend, price, ticker, tp_amount, auto=True, rule_2_enabled=rule2_enabled, stop_loss_amount=sl_amount, rule_3_enabled=rule3_enabled, rule_3_drop_count=rule3_drop)
                                 except Exception:
                                     # best-effort; do not break loop
                                     pass
                             else:
-                                trader.on_signal(trend, price, ticker, auto=True)
+                                trader.on_signal(trend, price, ticker, auto=True, rule_2_enabled=rule2_enabled, stop_loss_amount=sl_amount, rule_3_enabled=rule3_enabled, rule_3_drop_count=rule3_drop)
                     except Exception:
                         pass
 
@@ -107,69 +115,11 @@ async def broadcaster_loop():
                         pass
             except Exception:
                 pass
-
-            # Also handle the legacy single-service screenshot/status
-            image_b64 = None
-            try:
-                last = status.get('last_result') or {}
-                img_path = last.get('image_path')
-                if img_path and os.path.exists(img_path):
-                    with open(img_path, 'rb') as f:
-                        image_b64 = base64.b64encode(f.read()).decode('ascii')
-                # update trader auto signals for legacy service (Rule #1 override supported)
-                try:
-                    trend = last.get('trend') or ''
-                    price = last.get('price') or last.get('price_value') or None
-                    ticker = last.get('ticker') or None
-                    legacy_hwnd = None
-                    try:
-                        legacy_hwnd = getattr(service, 'target_hwnd', None)
-                    except Exception:
-                        legacy_hwnd = None
-
-                    bot_info = None
-                    if legacy_hwnd is not None:
-                        try:
-                            bot_info = get_bot_db_entry(int(legacy_hwnd))
-                        except Exception:
-                            bot_info = None
-
-                    if price and ticker:
-                        rule_enabled = False
-                        tp_amount = None
-                        try:
-                            if bot_info and isinstance(bot_info, dict):
-                                rule_enabled = bool(bot_info.get('rule_1_enabled'))
-                                tp_amount = bot_info.get('take_profit_amount')
-                        except Exception:
-                            rule_enabled = False
-                            tp_amount = None
-
-                        if rule_enabled:
-                            try:
-                                trader.on_signal_take_profit_mode(trend, price, ticker, tp_amount, auto=True)
-                            except Exception:
-                                pass
-                        else:
-                            trader.on_signal(trend, price, ticker, auto=True)
-                except Exception:
-                    pass
-            except Exception:
-                image_b64 = None
-
             payload = {
                 'timestamp': datetime.utcnow().isoformat() + 'Z',
-                'status': status,
                 'workers': workers_payload,
                 'trade_summary': trader.summary(),
-                'screenshot_b64': image_b64,
             }
-
-            # cleanup screenshots for legacy single service
-            try:
-                service.capture.clear_screenshots(keep_last_n=1)
-            except Exception:
-                pass
 
             await manager.broadcast(json.dumps(payload))
         except Exception as e:

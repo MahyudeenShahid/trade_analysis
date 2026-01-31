@@ -1345,3 +1345,17 @@ async def websocket_endpoint(websocket: WebSocket):
             await asyncio.sleep(10)
     except WebSocketDisconnect:
         manager.disconnect(websocket)
+
+
+# ---------------------------------------------------------------------------
+# Compatibility: re-export the refactored app
+# ---------------------------------------------------------------------------
+# The codebase has been refactored into `main.py` with multi-worker capture only.
+# Keep `backend_server:app` working by delegating to the canonical app.
+try:
+    from main import app as _refactored_app
+    app = _refactored_app
+except Exception:
+    # If something is wrong with the refactored app import, fall back to the
+    # legacy app defined above so the module can still import for debugging.
+    pass

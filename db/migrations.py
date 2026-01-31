@@ -93,7 +93,11 @@ def init_db():
             open_price REAL,
             open_time TEXT,
             rule_1_enabled INTEGER,
+            rule_2_enabled INTEGER,
+            rule_3_enabled INTEGER,
             take_profit_amount REAL,
+            stop_loss_amount REAL,
+            rule_3_drop_count INTEGER,
             meta TEXT
         )
         """
@@ -105,7 +109,11 @@ def init_db():
         existing_bots = [r[1] for r in cur.fetchall()]
         bot_additions = [
             ("rule_1_enabled", "INTEGER"),
+            ("rule_2_enabled", "INTEGER"),
+            ("rule_3_enabled", "INTEGER"),
             ("take_profit_amount", "REAL"),
+            ("stop_loss_amount", "REAL"),
+            ("rule_3_drop_count", "INTEGER"),
         ]
         for col, typ in bot_additions:
             if col not in existing_bots:

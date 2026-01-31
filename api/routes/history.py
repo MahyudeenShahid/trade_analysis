@@ -63,30 +63,42 @@ async def ingest(
     # Persist in DB
     save_observation(record)
 
-    # Trigger trade automatically for this ticker (Rule #1 override when hwnd is known)
-    if price and trend and ticker:
+    # Trigger trade automatically for this ticker (Rule #1/2 override when hwnd is known)
+    if price is not None and ticker:
         try:
             rule_enabled = False
+            rule2_enabled = False
+            rule3_enabled = False
             tp_amount = None
+            sl_amount = None
+            rule3_drop = None
             if hwnd is not None:
                 try:
                     from db.queries import get_bot_db_entry
                     bot = get_bot_db_entry(int(hwnd))
                     if bot and isinstance(bot, dict):
                         rule_enabled = bool(bot.get('rule_1_enabled'))
+                        rule2_enabled = bool(bot.get('rule_2_enabled'))
+                        rule3_enabled = bool(bot.get('rule_3_enabled'))
                         tp_amount = bot.get('take_profit_amount')
+                        sl_amount = bot.get('stop_loss_amount')
+                        rule3_drop = bot.get('rule_3_drop_count')
                 except Exception:
                     rule_enabled = False
+                    rule2_enabled = False
+                    rule3_enabled = False
                     tp_amount = None
+                    sl_amount = None
+                    rule3_drop = None
 
             if rule_enabled:
                 try:
                     # Rule #1: sell only on take-profit; buys still allowed.
-                    trader.on_signal_take_profit_mode(trend, price, ticker, tp_amount, auto=True)
+                    trader.on_signal_take_profit_mode(trend, price, ticker, tp_amount, auto=True, rule_2_enabled=rule2_enabled, stop_loss_amount=sl_amount, rule_3_enabled=rule3_enabled, rule_3_drop_count=rule3_drop)
                 except Exception:
                     pass
             else:
-                trader.on_signal(trend, price, ticker, auto=True)
+                trader.on_signal(trend, price, ticker, auto=True, rule_2_enabled=rule2_enabled, stop_loss_amount=sl_amount, rule_3_enabled=rule3_enabled, rule_3_drop_count=rule3_drop)
         except Exception:
             # best-effort; ingest should still succeed
             pass

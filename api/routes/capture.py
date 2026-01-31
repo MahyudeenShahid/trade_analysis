@@ -1,4 +1,4 @@
-"""Screen capture and worker management routes."""
+"""Screen capture and worker management routes (multi-worker only)."""
 
 import json
 import os
@@ -8,50 +8,10 @@ from typing import Optional
 from fastapi import APIRouter, HTTPException, Depends
 from api.dependencies import require_api_key
 from services.capture_manager import manager_services
-from services.background_service import service, selector
+from services.background_service import selector
 from db.connection import DB_LOCK, DB_PATH
 
 router = APIRouter(prefix="", tags=["capture"])
-
-
-@router.post("/start")
-def api_start(
-    hwnd: int = None,
-    interval: float = 1.0,
-    bring_to_foreground: Optional[bool] = None
-):
-    """
-    Start background capture for a specific window handle (legacy single-worker mode).
-    
-    Args:
-        hwnd: Window handle to capture
-        interval: Capture interval in seconds
-        bring_to_foreground: Whether to bring window to foreground before capture
-        
-    Returns:
-        dict: Status of operation
-    """
-    if hwnd is None:
-        raise HTTPException(status_code=400, detail="hwnd is required")
-    if not selector.is_window_valid(hwnd):
-        raise HTTPException(status_code=400, detail="Window handle invalid")
-
-    # apply bring_to_foreground override if provided
-    if bring_to_foreground is not None:
-        try:
-            service.capture.bring_to_foreground = bool(bring_to_foreground)
-        except Exception:
-            pass
-
-    service.capture.set_output_folder("screenshots")
-    service.set_interval(max(0.5, float(interval)))
-    if not service.set_target_window(hwnd):
-        raise HTTPException(status_code=500, detail="Failed to set target window")
-    started = service.start()
-    return {
-        "started": started,
-        "bring_to_foreground": service.capture.bring_to_foreground
-    }
 
 
 @router.post("/start_multi")
@@ -90,13 +50,6 @@ def api_start_multi(
             detail="Failed to start worker (maybe already running or invalid hwnd)"
         )
     return {"started": True, "hwnd": int(hwnd)}
-
-
-@router.post("/stop")
-def api_stop():
-    """Stop the legacy single-worker capture service."""
-    service.stop()
-    return {"stopped": True}
 
 
 @router.post("/stop_multi")
@@ -142,12 +95,6 @@ def api_stop_all_workers(_auth: bool = Depends(require_api_key)):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.get("/status")
-def api_status():
-    """Get status of the legacy single-worker service."""
-    return service.get_status()
-
-
 @router.get("/workers")
 def api_workers(_auth: bool = Depends(require_api_key)):
     """
@@ -189,137 +136,6 @@ def api_workers(_auth: bool = Depends(require_api_key)):
     except Exception:
         pass
     return out
-
-
-@router.post("/settings/line_detect")
-def api_set_line_detect(enabled: bool, _auth: bool = Depends(require_api_key)):
-    """Toggle line detection feature."""
-    try:
-        service.set_enable_line_detect(bool(enabled))
-        return {"enabled": service.enable_line_detect}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@router.post("/settings/crop_factor")
-def api_set_crop_factor(factor: float, _auth: bool = Depends(require_api_key)):
-    """
-    Set crop factor for all edges (backwards-compatible).
-    
-    Args:
-        factor: Crop factor between 0.0 and 1.0
-        
-    Returns:
-        dict: Current crop settings for all edges
-    """
-    try:
-        if factor < 0.0 or factor > 1.0:
-            raise HTTPException(
-                status_code=400,
-                detail="Crop factor must be between 0.0 and 1.0"
-            )
-        # Backwards-compatible: set all edges to the provided factor
-        try:
-            service.capture.left_crop_frac = float(factor)
-            service.capture.right_crop_frac = float(factor)
-            service.capture.top_crop_frac = float(factor)
-            service.capture.bottom_crop_frac = float(factor)
-        except Exception:
-            # best-effort assignment; ignore if attributes missing
-            pass
-        return {
-            "left": service.capture.left_crop_frac,
-            "right": service.capture.right_crop_frac,
-            "top": service.capture.top_crop_frac,
-            "bottom": service.capture.bottom_crop_frac
-        }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@router.post("/settings/crop")
-def api_set_crop(
-    left: Optional[float] = None,
-    right: Optional[float] = None,
-    top: Optional[float] = None,
-    bottom: Optional[float] = None,
-    _auth: bool = Depends(require_api_key)
-):
-    """
-    Set per-edge crop fractions (values between 0.0 and 1.0).
-    
-    Provide any subset of the parameters. Missing values are left unchanged.
-    
-    Returns:
-        dict: Current crop settings
-    """
-    try:
-        def _validate(v):
-            if v is None:
-                return None
-            try:
-                f = float(v)
-            except Exception:
-                raise HTTPException(
-                    status_code=400,
-                    detail="Crop values must be numeric"
-                )
-            if f < 0.0 or f > 1.0:
-                raise HTTPException(
-                    status_code=400,
-                    detail="Crop values must be between 0.0 and 1.0"
-                )
-            return f
-
-        lf = _validate(left)
-        rf = _validate(right)
-        tf = _validate(top)
-        bf = _validate(bottom)
-
-        if lf is not None:
-            try:
-                service.capture.left_crop_frac = lf
-            except Exception:
-                pass
-        if rf is not None:
-            try:
-                service.capture.right_crop_frac = rf
-            except Exception:
-                pass
-        if tf is not None:
-            try:
-                service.capture.top_crop_frac = tf
-            except Exception:
-                pass
-        if bf is not None:
-            try:
-                service.capture.bottom_crop_frac = bf
-            except Exception:
-                pass
-
-        return {
-            "left": getattr(service.capture, 'left_crop_frac', None),
-            "right": getattr(service.capture, 'right_crop_frac', None),
-            "top": getattr(service.capture, 'top_crop_frac', None),
-            "bottom": getattr(service.capture, 'bottom_crop_frac', None)
-        }
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@router.post("/settings/bring_to_foreground")
-def api_set_bring_to_foreground(
-    enabled: bool,
-    _auth: bool = Depends(require_api_key)
-):
-    """Toggle whether capture temporarily brings the target window to foreground."""
-    try:
-        service.capture.bring_to_foreground = bool(enabled)
-        return {"bring_to_foreground": service.capture.bring_to_foreground}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.post("/workers/{hwnd}/crop")

@@ -57,13 +57,16 @@ class TradeSimulator:
                 "first_cycle_done": False,        # special first-cycle completed
                 "waiting_for_second_down": False, # first-cycle flag
                 "trade_history": [],              # ticker-specific trades
-                "last_direction": None
+                "last_direction": None,
+                "last_price": None,
+                "peak_price": None,
+                "drop_count": 0
             }
 
     # ---------------------------------------------------------------
     # SIGNAL HANDLER
     # ---------------------------------------------------------------
-    def on_signal(self, trend: str, price_str: Optional[str], ticker: str, auto: bool = True) -> Dict:
+    def on_signal(self, trend: str, price_str: Optional[str], ticker: str, auto: bool = True, rule_2_enabled: bool = False, stop_loss_amount: Optional[float] = None, rule_3_enabled: bool = False, rule_3_drop_count: Optional[int] = None) -> Dict:
         """Handle signal for a given ticker."""
         ticker = self._normalize_ticker(ticker)
         price = self._parse_price(price_str)
@@ -73,6 +76,22 @@ class TradeSimulator:
         trend = trend.lower()
         self._ensure_ticker(ticker)
         state = self.tickers[ticker]
+
+        # RULE #2: stop loss at buy price - stop_loss_amount
+        if rule_2_enabled:
+            try:
+                if self.maybe_stop_loss_sell(ticker, price, stop_loss_amount):
+                    return self.summary()
+            except Exception:
+                pass
+
+        # RULE #3: consecutive drops from peak
+        if rule_3_enabled:
+            try:
+                if self.maybe_consecutive_drops_sell(ticker, price, rule_3_drop_count):
+                    return self.summary()
+            except Exception:
+                pass
 
         if auto:
             # --------------------------
@@ -143,6 +162,15 @@ class TradeSimulator:
             "ts": datetime.utcnow().isoformat() + 'Z'
         }
         self.tickers[ticker]["last_direction"] = "buy"
+        # initialize rule state
+        try:
+            self.tickers[ticker]["last_price"] = float(price)
+            self.tickers[ticker]["peak_price"] = float(price)
+            self.tickers[ticker]["drop_count"] = 0
+        except Exception:
+            self.tickers[ticker]["last_price"] = None
+            self.tickers[ticker]["peak_price"] = None
+            self.tickers[ticker]["drop_count"] = 0
         self._log_trade(ticker, "buy", price, None, win_reason=None)
 
     def _sell(self, ticker: str, price: float, win_reason: Optional[str] = None):
@@ -157,6 +185,10 @@ class TradeSimulator:
         self.tickers[ticker]["last_direction"] = "sell"
         self._log_trade(ticker, "sell", price, profit, win_reason=win_reason)
         self.tickers[ticker]["position"] = None
+        # reset rule state
+        self.tickers[ticker]["last_price"] = None
+        self.tickers[ticker]["peak_price"] = None
+        self.tickers[ticker]["drop_count"] = 0
 
     # ---------------------------------------------------------------
     # LOGGING
@@ -232,9 +264,114 @@ class TradeSimulator:
         return False
 
     # ---------------------------------------------------------------
+    # RULE #2 - STOP LOSS AT BUY PRICE
+    # ---------------------------------------------------------------
+    def maybe_stop_loss_sell(self, ticker: str, current_price, stop_loss_amount: Optional[float] = None) -> bool:
+        """Sell immediately when current_price <= entry - stop_loss_amount (Rule #2)."""
+        ticker = self._normalize_ticker(ticker)
+        if not ticker:
+            return False
+        self._ensure_ticker(ticker)
+        state = self.tickers[ticker]
+        pos = state.get('position')
+        if not pos:
+            return False
+        entry = None
+        try:
+            entry = pos.get('entry')
+        except Exception:
+            entry = None
+        if entry is None:
+            return False
+
+        cp = None
+        try:
+            if isinstance(current_price, (int, float)):
+                cp = float(current_price)
+            else:
+                cp = self._parse_price(current_price)
+        except Exception:
+            cp = None
+        if cp is None:
+            return False
+
+        sl = 0.0
+        try:
+            if stop_loss_amount is not None:
+                sl = float(stop_loss_amount)
+        except Exception:
+            sl = 0.0
+        if sl < 0:
+            sl = 0.0
+
+        try:
+            if cp <= (float(entry) - sl):
+                self._sell(ticker, cp, win_reason="STOP_LOSS_RULE_2")
+                return True
+        except Exception:
+            return False
+        return False
+
+    # ---------------------------------------------------------------
+    # RULE #3 - CONSECUTIVE DROPS FROM PEAK
+    # ---------------------------------------------------------------
+    def maybe_consecutive_drops_sell(self, ticker: str, current_price, drop_count_required: Optional[int] = None) -> bool:
+        """Sell when price has dropped N consecutive times from the peak (Rule #3)."""
+        ticker = self._normalize_ticker(ticker)
+        if not ticker:
+            return False
+        self._ensure_ticker(ticker)
+        state = self.tickers[ticker]
+        pos = state.get('position')
+        if not pos:
+            return False
+
+        try:
+            n_required = int(drop_count_required) if drop_count_required is not None else 0
+        except Exception:
+            n_required = 0
+        if n_required <= 0:
+            return False
+
+        cp = None
+        try:
+            if isinstance(current_price, (int, float)):
+                cp = float(current_price)
+            else:
+                cp = self._parse_price(current_price)
+        except Exception:
+            cp = None
+        if cp is None:
+            return False
+
+        # initialize last if needed
+        if state.get('last_price') is None:
+            state['last_price'] = float(cp)
+
+        # update consecutive drop count (double lower = sell)
+        try:
+            last_price = float(state['last_price'])
+            if cp < last_price:
+                state['drop_count'] = int(state.get('drop_count') or 0) + 1
+            elif cp > last_price:
+                # reset on uptick
+                state['drop_count'] = 0
+            state['last_price'] = float(cp)
+        except Exception:
+            pass
+
+        try:
+            if int(state.get('drop_count') or 0) >= n_required:
+                self._sell(ticker, cp, win_reason="CONSECUTIVE_DROPS_RULE_3")
+                return True
+        except Exception:
+            return False
+        return False
+
+    # ---------------------------------------------------------------
     # RULE #1 MODE - BUY AS USUAL, SELL ONLY ON TAKE PROFIT
     # ---------------------------------------------------------------
-    def on_signal_take_profit_mode(self, trend: str, price_str: Optional[str], ticker: str, take_profit_amount, auto: bool = True) -> Dict:
+    def on_signal_take_profit_mode(self, trend: str, price_str: Optional[str], ticker: str, take_profit_amount, auto: bool = True, rule_2_enabled: bool = False, stop_loss_amount: Optional[float] = None, rule_3_enabled: bool = False, rule_3_drop_count: Optional[int] = None) -> Dict:
         """In Rule #1 mode, buys may still be opened, but sells only occur via take-profit.
 
         This keeps the system able to enter positions, while overriding all other sell logic.
@@ -248,7 +385,23 @@ class TradeSimulator:
         self._ensure_ticker(ticker)
         state = self.tickers[ticker]
 
-        # First, attempt take-profit sell if we already have a position.
+        # First, attempt Rule #2 stop-loss sell if enabled.
+        if rule_2_enabled:
+            try:
+                if self.maybe_stop_loss_sell(ticker, price, stop_loss_amount):
+                    return self.summary()
+            except Exception:
+                pass
+
+        # Then, attempt Rule #3 consecutive drops if enabled.
+        if rule_3_enabled:
+            try:
+                if self.maybe_consecutive_drops_sell(ticker, price, rule_3_drop_count):
+                    return self.summary()
+            except Exception:
+                pass
+
+        # Then, attempt take-profit sell if we already have a position.
         try:
             self.maybe_take_profit_sell(ticker, price, take_profit_amount)
         except Exception:

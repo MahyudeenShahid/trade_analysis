@@ -11,3 +11,4 @@ client_backend.db
 migrations/__pycache__
 migrations/*.pyc
 backend_data.db
+screenshots/

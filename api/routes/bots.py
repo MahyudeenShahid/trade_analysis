@@ -53,7 +53,7 @@ def api_bot(hwnd: int, _auth: bool = Depends(require_api_key)):
 
 @router.post("/bots/upsert")
 def api_bot_upsert(payload: dict, _auth: bool = Depends(require_api_key)):
-    """Create/update a bot row, including Rule #1 settings."""
+    """Create/update a bot row, including Rule #1/#2 settings."""
     try:
         if not isinstance(payload, dict):
             raise HTTPException(status_code=400, detail="payload must be an object")
