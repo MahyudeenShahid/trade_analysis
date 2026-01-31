@@ -71,12 +71,17 @@ async def ingest(
             rule3_enabled = False
             rule4_enabled = True
             rule5_enabled = False
+            rule6_enabled = False
+            rule7_enabled = False
             tp_amount = None
             sl_amount = None
             rule3_drop = None
             rule5_down = None
             rule5_reversal = None
             rule5_scalp = None
+            rule6_down = None
+            rule6_profit = None
+            rule7_up = None
             if hwnd is not None:
                 try:
                     from db.queries import get_bot_db_entry
@@ -87,33 +92,43 @@ async def ingest(
                         rule3_enabled = bool(bot.get('rule_3_enabled'))
                         rule4_enabled = bool(bot.get('rule_4_enabled', 1))
                         rule5_enabled = bool(bot.get('rule_5_enabled'))
+                        rule6_enabled = bool(bot.get('rule_6_enabled'))
+                        rule7_enabled = bool(bot.get('rule_7_enabled'))
                         tp_amount = bot.get('take_profit_amount')
                         sl_amount = bot.get('stop_loss_amount')
                         rule3_drop = bot.get('rule_3_drop_count')
                         rule5_down = bot.get('rule_5_down_minutes')
                         rule5_reversal = bot.get('rule_5_reversal_amount')
                         rule5_scalp = bot.get('rule_5_scalp_amount')
+                        rule6_down = bot.get('rule_6_down_minutes')
+                        rule6_profit = bot.get('rule_6_profit_amount')
+                        rule7_up = bot.get('rule_7_up_minutes')
                 except Exception:
                     rule_enabled = False
                     rule2_enabled = False
                     rule3_enabled = False
                     rule4_enabled = True
                     rule5_enabled = False
+                    rule6_enabled = False
+                    rule7_enabled = False
                     tp_amount = None
                     sl_amount = None
                     rule3_drop = None
                     rule5_down = None
                     rule5_reversal = None
                     rule5_scalp = None
+                    rule6_down = None
+                    rule6_profit = None
+                    rule7_up = None
 
             if rule_enabled:
                 try:
                     # Rule #1: sell only on take-profit; buys still allowed.
-                    trader.on_signal_take_profit_mode(trend, price, ticker, tp_amount, auto=True, rule_2_enabled=rule2_enabled, stop_loss_amount=sl_amount, rule_3_enabled=rule3_enabled, rule_3_drop_count=rule3_drop, rule_4_enabled=rule4_enabled, rule_5_enabled=rule5_enabled, rule_5_down_minutes=rule5_down, rule_5_reversal_amount=rule5_reversal, rule_5_scalp_amount=rule5_scalp)
+                    trader.on_signal_take_profit_mode(trend, price, ticker, tp_amount, auto=True, rule_2_enabled=rule2_enabled, stop_loss_amount=sl_amount, rule_3_enabled=rule3_enabled, rule_3_drop_count=rule3_drop, rule_4_enabled=rule4_enabled, rule_5_enabled=rule5_enabled, rule_5_down_minutes=rule5_down, rule_5_reversal_amount=rule5_reversal, rule_5_scalp_amount=rule5_scalp, rule_6_enabled=rule6_enabled, rule_6_down_minutes=rule6_down, rule_6_profit_amount=rule6_profit, rule_7_enabled=rule7_enabled, rule_7_up_minutes=rule7_up)
                 except Exception:
                     pass
             else:
-                trader.on_signal(trend, price, ticker, auto=True, rule_2_enabled=rule2_enabled, stop_loss_amount=sl_amount, rule_3_enabled=rule3_enabled, rule_3_drop_count=rule3_drop, rule_4_enabled=rule4_enabled, rule_5_enabled=rule5_enabled, rule_5_down_minutes=rule5_down, rule_5_reversal_amount=rule5_reversal, rule_5_scalp_amount=rule5_scalp)
+                trader.on_signal(trend, price, ticker, auto=True, rule_2_enabled=rule2_enabled, stop_loss_amount=sl_amount, rule_3_enabled=rule3_enabled, rule_3_drop_count=rule3_drop, rule_4_enabled=rule4_enabled, rule_5_enabled=rule5_enabled, rule_5_down_minutes=rule5_down, rule_5_reversal_amount=rule5_reversal, rule_5_scalp_amount=rule5_scalp, rule_6_enabled=rule6_enabled, rule_6_down_minutes=rule6_down, rule_6_profit_amount=rule6_profit, rule_7_enabled=rule7_enabled, rule_7_up_minutes=rule7_up)
         except Exception:
             # best-effort; ingest should still succeed
             pass
