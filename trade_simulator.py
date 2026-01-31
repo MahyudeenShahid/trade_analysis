@@ -76,6 +76,12 @@ class TradeSimulator:
                 "rule7_up_start": None,
                 "rule7_ready_for_buy": False,
                 "rule7_active": False,
+                # Rule #8 state
+                "rule8_active": False,
+                # Rule #9 state
+                "rule9_window_start": None,
+                "rule9_flip_count": 0,
+                "rule9_last_trend": None,
             }
 
     # ---------------------------------------------------------------
@@ -96,7 +102,7 @@ class TradeSimulator:
     # ---------------------------------------------------------------
     # SIGNAL HANDLER
     # ---------------------------------------------------------------
-    def on_signal(self, trend: str, price_str: Optional[str], ticker: str, auto: bool = True, rule_2_enabled: bool = False, stop_loss_amount: Optional[float] = None, rule_3_enabled: bool = False, rule_3_drop_count: Optional[int] = None, rule_4_enabled: bool = True, rule_5_enabled: bool = False, rule_5_down_minutes: Optional[int] = None, rule_5_reversal_amount: Optional[float] = None, rule_5_scalp_amount: Optional[float] = None, rule_6_enabled: bool = False, rule_6_down_minutes: Optional[int] = None, rule_6_profit_amount: Optional[float] = None, rule_7_enabled: bool = False, rule_7_up_minutes: Optional[int] = None) -> Dict:
+    def on_signal(self, trend: str, price_str: Optional[str], ticker: str, auto: bool = True, rule_2_enabled: bool = False, stop_loss_amount: Optional[float] = None, rule_3_enabled: bool = False, rule_3_drop_count: Optional[int] = None, rule_4_enabled: bool = True, rule_5_enabled: bool = False, rule_5_down_minutes: Optional[int] = None, rule_5_reversal_amount: Optional[float] = None, rule_5_scalp_amount: Optional[float] = None, rule_6_enabled: bool = False, rule_6_down_minutes: Optional[int] = None, rule_6_profit_amount: Optional[float] = None, rule_7_enabled: bool = False, rule_7_up_minutes: Optional[int] = None, rule_8_enabled: bool = False, rule_8_buy_offset: Optional[float] = None, rule_8_sell_offset: Optional[float] = None, rule_9_enabled: bool = False, rule_9_amount: Optional[float] = None) -> Dict:
         """Handle signal for a given ticker."""
         ticker = self._normalize_ticker(ticker)
         price = self._parse_price(price_str)
@@ -146,6 +152,20 @@ class TradeSimulator:
             if rule_7_enabled:
                 try:
                     if self.maybe_rule7_trade(ticker, trend, price, rule_7_up_minutes):
+                        return self.summary()
+                except Exception:
+                    pass
+            # RULE #8: always buy/sell using offsets from current price
+            if rule_8_enabled:
+                try:
+                    if self.maybe_rule8_trade(ticker, price, rule_8_buy_offset, rule_8_sell_offset):
+                        return self.summary()
+                except Exception:
+                    pass
+            # RULE #9: 3 up/down cycles within 3 minutes → quick scalp
+            if rule_9_enabled:
+                try:
+                    if self.maybe_rule9_trade(ticker, trend, price, rule_9_amount):
                         return self.summary()
                 except Exception:
                     pass
@@ -248,6 +268,8 @@ class TradeSimulator:
         self.tickers[ticker]["drop_count"] = 0
         # reset rule #7 state
         self.tickers[ticker]["rule7_active"] = False
+        # reset rule #8 state
+        self.tickers[ticker]["rule8_active"] = False
         # reset rule #5 state unless this was a rule #5 sell
         if win_reason not in ("RULE_5",):
             self.tickers[ticker]["rule5_reversal_active"] = False
@@ -439,6 +461,94 @@ class TradeSimulator:
             state['rule7_active'] = True
             return True
 
+        return False
+
+    # ---------------------------------------------------------------
+    # RULE #8 - ALWAYS PLACE OFFSET BUY/SELL
+    # ---------------------------------------------------------------
+    def maybe_rule8_trade(self, ticker: str, current_price: float, buy_offset: Optional[float] = None, sell_offset: Optional[float] = None) -> bool:
+        ticker = self._normalize_ticker(ticker)
+        if not ticker:
+            return False
+        self._ensure_ticker(ticker)
+        state = self.tickers[ticker]
+
+        try:
+            bo = float(buy_offset) if buy_offset is not None else 0.25
+        except Exception:
+            bo = 0.25
+        try:
+            so = float(sell_offset) if sell_offset is not None else 0.25
+        except Exception:
+            so = 0.25
+
+        # Buy at current - offset, sell at current + offset
+        if state.get('position') is None:
+            buy_price = float(current_price) - bo
+            self._buy(ticker, buy_price)
+            state['rule8_active'] = True
+            return True
+        # If holding, sell using offset from current price
+        sell_price = float(current_price) + so
+        self._sell(ticker, sell_price, win_reason="RULE_8")
+        state['rule8_active'] = False
+        return True
+
+    # ---------------------------------------------------------------
+    # RULE #9 - UP/DOWN FLIPS (3 CYCLES IN 3 MIN)
+    # ---------------------------------------------------------------
+    def maybe_rule9_trade(self, ticker: str, trend: str, current_price: float, amount: Optional[float] = None) -> bool:
+        ticker = self._normalize_ticker(ticker)
+        if not ticker:
+            return False
+        self._ensure_ticker(ticker)
+        state = self.tickers[ticker]
+
+        try:
+            amt = float(amount) if amount is not None else 0.25
+        except Exception:
+            amt = 0.25
+
+        now = datetime.utcnow()
+        trend = (trend or '').lower()
+        if trend not in ('up', 'down'):
+            return False
+
+        window_seconds = 3 * 60
+        flips_needed = 5  # 3 up/down cycles -> 6 trends -> 5 flips
+
+        # Reset window if expired
+        if state.get('rule9_window_start') is None:
+            state['rule9_window_start'] = now
+            state['rule9_flip_count'] = 0
+            state['rule9_last_trend'] = trend
+        else:
+            try:
+                elapsed = (now - state.get('rule9_window_start')).total_seconds()
+            except Exception:
+                elapsed = 0
+            if elapsed > window_seconds:
+                state['rule9_window_start'] = now
+                state['rule9_flip_count'] = 0
+                state['rule9_last_trend'] = trend
+
+        # Count flips
+        last_trend = state.get('rule9_last_trend')
+        if last_trend and trend != last_trend:
+            state['rule9_flip_count'] = int(state.get('rule9_flip_count') or 0) + 1
+            state['rule9_last_trend'] = trend
+
+        # When threshold reached, execute quick scalp
+        if int(state.get('rule9_flip_count') or 0) >= flips_needed:
+            state['rule9_window_start'] = None
+            state['rule9_flip_count'] = 0
+            state['rule9_last_trend'] = None
+            if state.get('position') is None:
+                buy_price = float(current_price) - amt
+                sell_price = buy_price + amt
+                self._buy(ticker, buy_price)
+                self._sell(ticker, sell_price, win_reason="RULE_9")
+                return True
         return False
 
     # ---------------------------------------------------------------
@@ -638,7 +748,7 @@ class TradeSimulator:
     # ---------------------------------------------------------------
     # RULE #1 MODE - BUY AS USUAL, SELL ONLY ON TAKE PROFIT
     # ---------------------------------------------------------------
-    def on_signal_take_profit_mode(self, trend: str, price_str: Optional[str], ticker: str, take_profit_amount, auto: bool = True, rule_2_enabled: bool = False, stop_loss_amount: Optional[float] = None, rule_3_enabled: bool = False, rule_3_drop_count: Optional[int] = None, rule_4_enabled: bool = True, rule_5_enabled: bool = False, rule_5_down_minutes: Optional[int] = None, rule_5_reversal_amount: Optional[float] = None, rule_5_scalp_amount: Optional[float] = None, rule_6_enabled: bool = False, rule_6_down_minutes: Optional[int] = None, rule_6_profit_amount: Optional[float] = None, rule_7_enabled: bool = False, rule_7_up_minutes: Optional[int] = None) -> Dict:
+    def on_signal_take_profit_mode(self, trend: str, price_str: Optional[str], ticker: str, take_profit_amount, auto: bool = True, rule_2_enabled: bool = False, stop_loss_amount: Optional[float] = None, rule_3_enabled: bool = False, rule_3_drop_count: Optional[int] = None, rule_4_enabled: bool = True, rule_5_enabled: bool = False, rule_5_down_minutes: Optional[int] = None, rule_5_reversal_amount: Optional[float] = None, rule_5_scalp_amount: Optional[float] = None, rule_6_enabled: bool = False, rule_6_down_minutes: Optional[int] = None, rule_6_profit_amount: Optional[float] = None, rule_7_enabled: bool = False, rule_7_up_minutes: Optional[int] = None, rule_8_enabled: bool = False, rule_8_buy_offset: Optional[float] = None, rule_8_sell_offset: Optional[float] = None, rule_9_enabled: bool = False, rule_9_amount: Optional[float] = None) -> Dict:
         """In Rule #1 mode, buys may still be opened, but sells only occur via take-profit.
 
         This keeps the system able to enter positions, while overriding all other sell logic.

@@ -143,7 +143,7 @@ def upsert_bot_from_last_result(hwnd: int, last: dict):
                 )
             else:
                 cur.execute(
-                    "INSERT INTO bots (hwnd, name, ticker, total_pnl, open_direction, open_price, open_time, rule_1_enabled, rule_2_enabled, rule_3_enabled, rule_4_enabled, rule_5_enabled, rule_6_enabled, rule_7_enabled, take_profit_amount, stop_loss_amount, rule_3_drop_count, rule_5_down_minutes, rule_5_reversal_amount, rule_5_scalp_amount, rule_6_down_minutes, rule_6_profit_amount, rule_7_up_minutes, meta) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    "INSERT INTO bots (hwnd, name, ticker, total_pnl, open_direction, open_price, open_time, rule_1_enabled, rule_2_enabled, rule_3_enabled, rule_4_enabled, rule_5_enabled, rule_6_enabled, rule_7_enabled, rule_8_enabled, rule_9_enabled, take_profit_amount, stop_loss_amount, rule_3_drop_count, rule_5_down_minutes, rule_5_reversal_amount, rule_5_scalp_amount, rule_6_down_minutes, rule_6_profit_amount, rule_7_up_minutes, rule_8_buy_offset, rule_8_sell_offset, rule_9_amount, meta) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     (
                         hwnd,
                         name,
@@ -159,6 +159,8 @@ def upsert_bot_from_last_result(hwnd: int, last: dict):
                         0,
                         0,
                         0,
+                        0,
+                        0,
                         0.0,
                         0.0,
                         0,
@@ -168,6 +170,9 @@ def upsert_bot_from_last_result(hwnd: int, last: dict):
                         5,
                         2.0,
                         3,
+                        0.25,
+                        0.25,
+                        0.25,
                         json.dumps(meta) if isinstance(meta, dict) else json.dumps({}),
                     ),
                 )
@@ -197,6 +202,8 @@ def upsert_bot_settings(hwnd: int, settings: dict):
     rule_5_enabled = settings.get('rule_5_enabled')
     rule_6_enabled = settings.get('rule_6_enabled')
     rule_7_enabled = settings.get('rule_7_enabled')
+    rule_8_enabled = settings.get('rule_8_enabled')
+    rule_9_enabled = settings.get('rule_9_enabled')
     take_profit_amount = settings.get('take_profit_amount')
     stop_loss_amount = settings.get('stop_loss_amount')
     rule_3_drop_count = settings.get('rule_3_drop_count')
@@ -206,6 +213,9 @@ def upsert_bot_settings(hwnd: int, settings: dict):
     rule_6_down_minutes = settings.get('rule_6_down_minutes')
     rule_6_profit_amount = settings.get('rule_6_profit_amount')
     rule_7_up_minutes = settings.get('rule_7_up_minutes')
+    rule_8_buy_offset = settings.get('rule_8_buy_offset')
+    rule_8_sell_offset = settings.get('rule_8_sell_offset')
+    rule_9_amount = settings.get('rule_9_amount')
 
     # Normalize
     if rule_1_enabled is not None:
@@ -222,6 +232,10 @@ def upsert_bot_settings(hwnd: int, settings: dict):
         rule_6_enabled = 1 if bool(rule_6_enabled) else 0
     if rule_7_enabled is not None:
         rule_7_enabled = 1 if bool(rule_7_enabled) else 0
+    if rule_8_enabled is not None:
+        rule_8_enabled = 1 if bool(rule_8_enabled) else 0
+    if rule_9_enabled is not None:
+        rule_9_enabled = 1 if bool(rule_9_enabled) else 0
     if take_profit_amount is not None:
         try:
             take_profit_amount = float(take_profit_amount)
@@ -267,6 +281,21 @@ def upsert_bot_settings(hwnd: int, settings: dict):
             rule_7_up_minutes = int(rule_7_up_minutes)
         except Exception:
             rule_7_up_minutes = None
+    if rule_8_buy_offset is not None:
+        try:
+            rule_8_buy_offset = float(rule_8_buy_offset)
+        except Exception:
+            rule_8_buy_offset = None
+    if rule_8_sell_offset is not None:
+        try:
+            rule_8_sell_offset = float(rule_8_sell_offset)
+        except Exception:
+            rule_8_sell_offset = None
+    if rule_9_amount is not None:
+        try:
+            rule_9_amount = float(rule_9_amount)
+        except Exception:
+            rule_9_amount = None
 
     # Optional meta merge
     meta = settings.get('meta')
@@ -311,6 +340,8 @@ def upsert_bot_settings(hwnd: int, settings: dict):
                     rule_5_enabled = COALESCE(?, rule_5_enabled),
                     rule_6_enabled = COALESCE(?, rule_6_enabled),
                     rule_7_enabled = COALESCE(?, rule_7_enabled),
+                    rule_8_enabled = COALESCE(?, rule_8_enabled),
+                    rule_9_enabled = COALESCE(?, rule_9_enabled),
                     take_profit_amount = COALESCE(?, take_profit_amount),
                     stop_loss_amount = COALESCE(?, stop_loss_amount),
                     rule_3_drop_count = COALESCE(?, rule_3_drop_count),
@@ -320,6 +351,9 @@ def upsert_bot_settings(hwnd: int, settings: dict):
                     rule_6_down_minutes = COALESCE(?, rule_6_down_minutes),
                     rule_6_profit_amount = COALESCE(?, rule_6_profit_amount),
                     rule_7_up_minutes = COALESCE(?, rule_7_up_minutes),
+                    rule_8_buy_offset = COALESCE(?, rule_8_buy_offset),
+                    rule_8_sell_offset = COALESCE(?, rule_8_sell_offset),
+                    rule_9_amount = COALESCE(?, rule_9_amount),
                     meta = ?
                 WHERE hwnd = ?
                 """,
@@ -333,6 +367,8 @@ def upsert_bot_settings(hwnd: int, settings: dict):
                     rule_5_enabled,
                     rule_6_enabled,
                     rule_7_enabled,
+                    rule_8_enabled,
+                    rule_9_enabled,
                     take_profit_amount,
                     stop_loss_amount,
                     rule_3_drop_count,
@@ -342,6 +378,9 @@ def upsert_bot_settings(hwnd: int, settings: dict):
                     rule_6_down_minutes,
                     rule_6_profit_amount,
                     rule_7_up_minutes,
+                    rule_8_buy_offset,
+                    rule_8_sell_offset,
+                    rule_9_amount,
                     json.dumps(merged_meta) if isinstance(merged_meta, dict) else json.dumps({}),
                     hwnd,
                 ),
@@ -349,8 +388,8 @@ def upsert_bot_settings(hwnd: int, settings: dict):
         else:
             cur.execute(
                 """
-                INSERT INTO bots (hwnd, name, ticker, total_pnl, open_direction, open_price, open_time, rule_1_enabled, rule_2_enabled, rule_3_enabled, rule_4_enabled, rule_5_enabled, rule_6_enabled, rule_7_enabled, take_profit_amount, stop_loss_amount, rule_3_drop_count, rule_5_down_minutes, rule_5_reversal_amount, rule_5_scalp_amount, rule_6_down_minutes, rule_6_profit_amount, rule_7_up_minutes, meta)
-                VALUES (?, ?, ?, NULL, NULL, NULL, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO bots (hwnd, name, ticker, total_pnl, open_direction, open_price, open_time, rule_1_enabled, rule_2_enabled, rule_3_enabled, rule_4_enabled, rule_5_enabled, rule_6_enabled, rule_7_enabled, rule_8_enabled, rule_9_enabled, take_profit_amount, stop_loss_amount, rule_3_drop_count, rule_5_down_minutes, rule_5_reversal_amount, rule_5_scalp_amount, rule_6_down_minutes, rule_6_profit_amount, rule_7_up_minutes, rule_8_buy_offset, rule_8_sell_offset, rule_9_amount, meta)
+                VALUES (?, ?, ?, NULL, NULL, NULL, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     hwnd,
@@ -363,6 +402,8 @@ def upsert_bot_settings(hwnd: int, settings: dict):
                     rule_5_enabled if rule_5_enabled is not None else 0,
                     rule_6_enabled if rule_6_enabled is not None else 0,
                     rule_7_enabled if rule_7_enabled is not None else 0,
+                    rule_8_enabled if rule_8_enabled is not None else 0,
+                    rule_9_enabled if rule_9_enabled is not None else 0,
                     take_profit_amount if take_profit_amount is not None else 0.0,
                     stop_loss_amount if stop_loss_amount is not None else 0.0,
                     rule_3_drop_count if rule_3_drop_count is not None else 0,
@@ -372,6 +413,9 @@ def upsert_bot_settings(hwnd: int, settings: dict):
                     rule_6_down_minutes if rule_6_down_minutes is not None else 5,
                     rule_6_profit_amount if rule_6_profit_amount is not None else 2.0,
                     rule_7_up_minutes if rule_7_up_minutes is not None else 3,
+                    rule_8_buy_offset if rule_8_buy_offset is not None else 0.25,
+                    rule_8_sell_offset if rule_8_sell_offset is not None else 0.25,
+                    rule_9_amount if rule_9_amount is not None else 0.25,
                     json.dumps(merged_meta) if isinstance(merged_meta, dict) else json.dumps({}),
                 ),
             )
