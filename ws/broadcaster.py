@@ -37,11 +37,16 @@ async def broadcaster_loop():
                         st = {}
                     last = (st.get('last_result') or {}) if isinstance(st, dict) else {}
                     image_b64 = None
+                    image_mime = None
                     img_path = last.get('image_path')
                     if img_path and os.path.exists(img_path):
                         try:
                             with open(img_path, 'rb') as f:
                                 image_b64 = base64.b64encode(f.read()).decode('ascii')
+                            if str(img_path).lower().endswith(('.jpg', '.jpeg')):
+                                image_mime = 'image/jpeg'
+                            else:
+                                image_mime = 'image/png'
                         except Exception:
                             image_b64 = None
 
@@ -96,12 +101,12 @@ async def broadcaster_loop():
                                     rule5_down = bot_info.get('rule_5_down_minutes')
                                     rule5_reversal = bot_info.get('rule_5_reversal_amount')
                                     rule5_scalp = bot_info.get('rule_5_scalp_amount')
-                                        rule6_down = bot_info.get('rule_6_down_minutes')
-                                        rule6_profit = bot_info.get('rule_6_profit_amount')
-                                            rule7_up = bot_info.get('rule_7_up_minutes')
-                                                rule8_buy = bot_info.get('rule_8_buy_offset')
-                                                rule8_sell = bot_info.get('rule_8_sell_offset')
-                                                rule9_amount = bot_info.get('rule_9_amount')
+                                    rule6_down = bot_info.get('rule_6_down_minutes')
+                                    rule6_profit = bot_info.get('rule_6_profit_amount')
+                                    rule7_up = bot_info.get('rule_7_up_minutes')
+                                    rule8_buy = bot_info.get('rule_8_buy_offset')
+                                    rule8_sell = bot_info.get('rule_8_sell_offset')
+                                    rule9_amount = bot_info.get('rule_9_amount')
                             except Exception:
                                 rule_enabled = False
                                 rule2_enabled = False
@@ -129,12 +134,32 @@ async def broadcaster_loop():
                                 # Rule #1 overrides sell logic: sell only on take-profit.
                                 # Buys are still allowed so the bot can enter positions.
                                 try:
+                                    before_count = len(trader.trade_history)
                                     trader.on_signal_take_profit_mode(trend, price, ticker, tp_amount, auto=True, rule_2_enabled=rule2_enabled, stop_loss_amount=sl_amount, rule_3_enabled=rule3_enabled, rule_3_drop_count=rule3_drop, rule_4_enabled=rule4_enabled, rule_5_enabled=rule5_enabled, rule_5_down_minutes=rule5_down, rule_5_reversal_amount=rule5_reversal, rule_5_scalp_amount=rule5_scalp, rule_6_enabled=rule6_enabled, rule_6_down_minutes=rule6_down, rule_6_profit_amount=rule6_profit, rule_7_enabled=rule7_enabled, rule_7_up_minutes=rule7_up, rule_8_enabled=rule8_enabled, rule_8_buy_offset=rule8_buy, rule_8_sell_offset=rule8_sell, rule_9_enabled=rule9_enabled, rule_9_amount=rule9_amount)
+                                    after_count = len(trader.trade_history)
+                                    if after_count > before_count and hasattr(svc, 'handle_trade_event'):
+                                        try:
+                                            for ev in trader.trade_history[before_count:after_count]:
+                                                if str(ev.get('ticker', '')).upper() != str(ticker).upper():
+                                                    continue
+                                                svc.handle_trade_event(ev.get('direction'), ev.get('ticker'), ev.get('ts'))
+                                        except Exception:
+                                            pass
                                 except Exception:
                                     # best-effort; do not break loop
                                     pass
                             else:
+                                before_count = len(trader.trade_history)
                                 trader.on_signal(trend, price, ticker, auto=True, rule_2_enabled=rule2_enabled, stop_loss_amount=sl_amount, rule_3_enabled=rule3_enabled, rule_3_drop_count=rule3_drop, rule_4_enabled=rule4_enabled, rule_5_enabled=rule5_enabled, rule_5_down_minutes=rule5_down, rule_5_reversal_amount=rule5_reversal, rule_5_scalp_amount=rule5_scalp, rule_6_enabled=rule6_enabled, rule_6_down_minutes=rule6_down, rule_6_profit_amount=rule6_profit, rule_7_enabled=rule7_enabled, rule_7_up_minutes=rule7_up, rule_8_enabled=rule8_enabled, rule_8_buy_offset=rule8_buy, rule_8_sell_offset=rule8_sell, rule_9_enabled=rule9_enabled, rule_9_amount=rule9_amount)
+                                after_count = len(trader.trade_history)
+                                if after_count > before_count and hasattr(svc, 'handle_trade_event'):
+                                    try:
+                                        for ev in trader.trade_history[before_count:after_count]:
+                                            if str(ev.get('ticker', '')).upper() != str(ticker).upper():
+                                                continue
+                                            svc.handle_trade_event(ev.get('direction'), ev.get('ticker'), ev.get('ts'))
+                                    except Exception:
+                                        pass
                     except Exception:
                         pass
 
@@ -142,6 +167,7 @@ async def broadcaster_loop():
                         'hwnd': int(hwnd),
                         'status': st or {},
                         'screenshot_b64': image_b64,
+                        'screenshot_mime': image_mime,
                         'last_result': last,
                         'bot': bot_info,
                     })

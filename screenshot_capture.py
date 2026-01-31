@@ -210,8 +210,15 @@ class ScreenshotCapture:
 
             # Save if path provided
             if save_path:
-                img.save(save_path)
-                print(f"Screenshot saved to: {save_path}")
+                try:
+                    if save_path.lower().endswith(('.jpg', '.jpeg')):
+                        img = img.convert('RGB')
+                        img.save(save_path, format='JPEG', quality=30, optimize=True)
+                    else:
+                        img.save(save_path)
+                    print(f"Screenshot saved to: {save_path}")
+                except Exception:
+                    pass
             
             # Restore previous foreground window if we changed it
             if self.bring_to_foreground and foreground_hwnd and foreground_hwnd != hwnd:
@@ -239,7 +246,7 @@ class ScreenshotCapture:
             str: Path to saved screenshot, or None if failed
         """
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:-3]
-        filename = f"{prefix}_{timestamp}.png"
+        filename = f"{prefix}_{timestamp}.jpg"
         save_path = os.path.join(self.output_folder, filename)
         
         img = self.capture_window(hwnd, save_path)
@@ -283,7 +290,7 @@ class ScreenshotCapture:
             files = [
                 os.path.join(self.output_folder, f) 
                 for f in os.listdir(self.output_folder) 
-                if f.endswith('.png')
+                if f.lower().endswith(('.jpg', '.jpeg', '.png'))
             ]
             if files:
                 return max(files, key=os.path.getctime)
@@ -302,7 +309,7 @@ class ScreenshotCapture:
             files = [
                 os.path.join(self.output_folder, f) 
                 for f in os.listdir(self.output_folder) 
-                if f.endswith('.png')
+                if f.lower().endswith(('.jpg', '.jpeg', '.png'))
             ]
             
             # Sort by creation time

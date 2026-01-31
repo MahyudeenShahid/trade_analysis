@@ -8,6 +8,8 @@ of a selected window at specified intervals in the background.
 import threading
 import time
 from datetime import datetime
+from collections import deque
+import shutil
 from screenshot_capture import ScreenshotCapture
 from window_selector import WindowSelector
 from title_extractor import extract_from_title
@@ -62,6 +64,9 @@ class BackgroundCaptureService:
         # since the service started. When `capture.bring_to_foreground` is enabled
         # we only force-foreground once to avoid continuously stealing focus.
         self._brought_to_foreground = False
+        # Trade screenshot capture
+        self.trade_screens_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "trade_screenshots")
+        self.trade_recorder = TradeScreenshotRecorder(self.trade_screens_dir, pre_count=5, post_count=5)
     
     def set_target_window(self, hwnd):
         """
@@ -75,8 +80,22 @@ class BackgroundCaptureService:
         """
         if self.selector.is_window_valid(hwnd):
             self.target_hwnd = hwnd
+            try:
+                self.trade_recorder.set_hwnd(int(hwnd))
+            except Exception:
+                pass
             return True
         return False
+
+    def handle_trade_event(self, direction: str, ticker: str, trade_ts: str = None):
+        """Notify trade recorder about buy/sell events."""
+        try:
+            if direction == 'buy':
+                self.trade_recorder.start_trade(ticker, trade_ts)
+            elif direction == 'sell':
+                self.trade_recorder.end_trade()
+        except Exception:
+            pass
     
     def set_interval(self, seconds):
         """
@@ -203,7 +222,7 @@ class BackgroundCaptureService:
                 
                 # Capture screenshot (do not save immediately to reduce IO latency)
                 timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:-3]
-                filename = f"capture_{timestamp}.png"
+                filename = f"capture_{timestamp}.jpg"
                 img_path = os.path.join(self.capture.output_folder, filename)
                 img = self.capture.capture_window(self.target_hwnd)
 
@@ -214,7 +233,7 @@ class BackgroundCaptureService:
                     if arr is not None:
                         import cv2 as _cv2
                         try:
-                            _cv2.imwrite(img_path, arr)
+                            _cv2.imwrite(img_path, arr, [int(_cv2.IMWRITE_JPEG_QUALITY), 30])
                             from PIL import Image as _I
                             img = _I.fromarray(arr[:, :, ::-1])
                         except Exception as e:
@@ -236,7 +255,7 @@ class BackgroundCaptureService:
                         arr = self.capture.capture_window_to_array(self.target_hwnd)
                         if arr is not None:
                             import cv2 as _cv2
-                            _cv2.imwrite(img_path, arr)
+                            _cv2.imwrite(img_path, arr, [int(_cv2.IMWRITE_JPEG_QUALITY), 30])
                             from PIL import Image as _I
                             img = _I.fromarray(arr[:, :, ::-1])
                             if _pil_img_too_small(img):
@@ -251,11 +270,16 @@ class BackgroundCaptureService:
                 if img is not None:
                     # Save the image after quick OCR check to reduce blocking earlier
                     try:
-                        img.save(img_path)
+                        img = img.convert('RGB')
+                        img.save(img_path, format='JPEG', quality=30, optimize=True)
                         print(f"Screenshot saved to: {img_path}")
                     except Exception:
                         pass
                     self.successful_captures += 1
+                    try:
+                        self.trade_recorder.register_capture(img_path)
+                    except Exception:
+                        pass
                     trend = None
                     ocr_ran = False
                     ocr_timed_out = False
@@ -377,6 +401,73 @@ class BackgroundCaptureService:
             self.capture_thread = threading.Thread(target=self._capture_loop, daemon=True)
             self.capture_thread.start()
             print("Background capture service resumed.")
+
+
+class TradeScreenshotRecorder:
+    def __init__(self, base_dir: str, pre_count: int = 5, post_count: int = 5):
+        self.base_dir = base_dir
+        self.pre_count = max(1, int(pre_count))
+        self.post_count = max(1, int(post_count))
+        self.pre_buffer = deque(maxlen=self.pre_count)
+        self.active_trade = False
+        self.after_remaining = 0
+        self.trade_dir = None
+        self.current_day = None
+        self.hwnd = None
+
+    def set_hwnd(self, hwnd: int):
+        self.hwnd = hwnd
+
+    def _ensure_day_dir(self):
+        day = datetime.utcnow().strftime("%Y%m%d")
+        if self.current_day != day:
+            try:
+                if os.path.exists(self.base_dir):
+                    shutil.rmtree(self.base_dir)
+            except Exception:
+                pass
+            os.makedirs(self.base_dir, exist_ok=True)
+            self.current_day = day
+        return day
+
+    def _copy_to(self, folder: str, src: str):
+        try:
+            os.makedirs(folder, exist_ok=True)
+            if src and os.path.exists(src):
+                shutil.copy2(src, os.path.join(folder, os.path.basename(src)))
+        except Exception:
+            pass
+
+    def register_capture(self, img_path: str):
+        self._ensure_day_dir()
+        if img_path:
+            self.pre_buffer.append(img_path)
+        if self.active_trade and self.trade_dir:
+            self._copy_to(os.path.join(self.trade_dir, "during"), img_path)
+        elif self.after_remaining > 0 and self.trade_dir:
+            self._copy_to(os.path.join(self.trade_dir, "post"), img_path)
+            self.after_remaining -= 1
+            if self.after_remaining <= 0:
+                self.trade_dir = None
+
+    def start_trade(self, ticker: str, trade_ts: str = None):
+        day = self._ensure_day_dir()
+        safe_ticker = (ticker or "UNKNOWN").replace(os.sep, "_")
+        trade_id = (trade_ts or datetime.utcnow().isoformat()).replace(":", "-")
+        base = os.path.join(self.base_dir, day)
+        if self.hwnd is not None:
+            base = os.path.join(base, f"hwnd_{int(self.hwnd)}")
+        trade_dir = os.path.join(base, safe_ticker, f"trade_{trade_id}")
+        self.trade_dir = trade_dir
+        # copy pre-buffer
+        for p in list(self.pre_buffer):
+            self._copy_to(os.path.join(trade_dir, "pre"), p)
+        self.active_trade = True
+        self.after_remaining = 0
+
+    def end_trade(self):
+        self.active_trade = False
+        self.after_remaining = self.post_count
 
 
 if __name__ == "__main__":
