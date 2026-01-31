@@ -459,15 +459,15 @@ class TradeSimulator:
         if state.get('rule5_scalp_active'):
             if trend != 'up':
                 state['rule5_scalp_active'] = False
-                return False
-            # execute quick scalp trades on each up tick
-            if state.get('position') is None:
-                buy_price = current_price - scalp_amt
-                sell_price = buy_price + scalp_amt
-                self._buy(ticker, buy_price)
-                self._sell(ticker, sell_price, win_reason="RULE_5")
+            else:
+                # execute quick scalp trades on each up tick
+                if state.get('position') is None:
+                    buy_price = current_price - scalp_amt
+                    sell_price = current_price + scalp_amt
+                    self._buy(ticker, buy_price)
+                    self._sell(ticker, sell_price, win_reason="RULE_5")
+                    return True
                 return True
-            return True
 
         # Track continuous downtrend duration
         if trend == 'down':
