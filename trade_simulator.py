@@ -64,9 +64,24 @@ class TradeSimulator:
             }
 
     # ---------------------------------------------------------------
+    # RULE #4 - TRADING HOURS
+    # ---------------------------------------------------------------
+    def _is_trading_hours(self) -> bool:
+        """Return True if local time is Mon-Fri 9:30am–4:00pm."""
+        try:
+            now = datetime.now()
+            # Monday=0 ... Sunday=6
+            if now.weekday() > 4:
+                return False
+            total_minutes = now.hour * 60 + now.minute
+            return (total_minutes >= (9 * 60 + 30)) and (total_minutes <= (16 * 60))
+        except Exception:
+            return True
+
+    # ---------------------------------------------------------------
     # SIGNAL HANDLER
     # ---------------------------------------------------------------
-    def on_signal(self, trend: str, price_str: Optional[str], ticker: str, auto: bool = True, rule_2_enabled: bool = False, stop_loss_amount: Optional[float] = None, rule_3_enabled: bool = False, rule_3_drop_count: Optional[int] = None) -> Dict:
+    def on_signal(self, trend: str, price_str: Optional[str], ticker: str, auto: bool = True, rule_2_enabled: bool = False, stop_loss_amount: Optional[float] = None, rule_3_enabled: bool = False, rule_3_drop_count: Optional[int] = None, rule_4_enabled: bool = True) -> Dict:
         """Handle signal for a given ticker."""
         ticker = self._normalize_ticker(ticker)
         price = self._parse_price(price_str)
@@ -94,6 +109,9 @@ class TradeSimulator:
                 pass
 
         if auto:
+            # RULE #4: trade only during market hours (Mon–Fri 9:30–16:00)
+            if rule_4_enabled and not self._is_trading_hours():
+                return self.summary()
             # --------------------------
             # FIRST CYCLE LOGIC (first DOWN special)
             # --------------------------
@@ -371,7 +389,7 @@ class TradeSimulator:
     # ---------------------------------------------------------------
     # RULE #1 MODE - BUY AS USUAL, SELL ONLY ON TAKE PROFIT
     # ---------------------------------------------------------------
-    def on_signal_take_profit_mode(self, trend: str, price_str: Optional[str], ticker: str, take_profit_amount, auto: bool = True, rule_2_enabled: bool = False, stop_loss_amount: Optional[float] = None, rule_3_enabled: bool = False, rule_3_drop_count: Optional[int] = None) -> Dict:
+    def on_signal_take_profit_mode(self, trend: str, price_str: Optional[str], ticker: str, take_profit_amount, auto: bool = True, rule_2_enabled: bool = False, stop_loss_amount: Optional[float] = None, rule_3_enabled: bool = False, rule_3_drop_count: Optional[int] = None, rule_4_enabled: bool = True) -> Dict:
         """In Rule #1 mode, buys may still be opened, but sells only occur via take-profit.
 
         This keeps the system able to enter positions, while overriding all other sell logic.
@@ -408,6 +426,10 @@ class TradeSimulator:
             pass
 
         if not auto:
+            return self.summary()
+
+        # RULE #4: trade only during market hours (Mon–Fri 9:30–16:00)
+        if rule_4_enabled and not self._is_trading_hours():
             return self.summary()
 
         # If position still open, do not sell on down/other signals.

@@ -143,7 +143,7 @@ def upsert_bot_from_last_result(hwnd: int, last: dict):
                 )
             else:
                 cur.execute(
-                    "INSERT INTO bots (hwnd, name, ticker, total_pnl, open_direction, open_price, open_time, rule_1_enabled, rule_2_enabled, rule_3_enabled, take_profit_amount, stop_loss_amount, rule_3_drop_count, meta) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    "INSERT INTO bots (hwnd, name, ticker, total_pnl, open_direction, open_price, open_time, rule_1_enabled, rule_2_enabled, rule_3_enabled, rule_4_enabled, take_profit_amount, stop_loss_amount, rule_3_drop_count, meta) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     (
                         hwnd,
                         name,
@@ -155,6 +155,7 @@ def upsert_bot_from_last_result(hwnd: int, last: dict):
                         0,
                         0,
                         0,
+                        1,
                         0.0,
                         0.0,
                         0,
@@ -183,6 +184,7 @@ def upsert_bot_settings(hwnd: int, settings: dict):
     rule_1_enabled = settings.get('rule_1_enabled')
     rule_2_enabled = settings.get('rule_2_enabled')
     rule_3_enabled = settings.get('rule_3_enabled')
+    rule_4_enabled = settings.get('rule_4_enabled')
     take_profit_amount = settings.get('take_profit_amount')
     stop_loss_amount = settings.get('stop_loss_amount')
     rule_3_drop_count = settings.get('rule_3_drop_count')
@@ -194,6 +196,8 @@ def upsert_bot_settings(hwnd: int, settings: dict):
         rule_2_enabled = 1 if bool(rule_2_enabled) else 0
     if rule_3_enabled is not None:
         rule_3_enabled = 1 if bool(rule_3_enabled) else 0
+    if rule_4_enabled is not None:
+        rule_4_enabled = 1 if bool(rule_4_enabled) else 0
     if take_profit_amount is not None:
         try:
             take_profit_amount = float(take_profit_amount)
@@ -249,6 +253,7 @@ def upsert_bot_settings(hwnd: int, settings: dict):
                     rule_1_enabled = COALESCE(?, rule_1_enabled),
                     rule_2_enabled = COALESCE(?, rule_2_enabled),
                     rule_3_enabled = COALESCE(?, rule_3_enabled),
+                    rule_4_enabled = COALESCE(?, rule_4_enabled),
                     take_profit_amount = COALESCE(?, take_profit_amount),
                     stop_loss_amount = COALESCE(?, stop_loss_amount),
                     rule_3_drop_count = COALESCE(?, rule_3_drop_count),
@@ -261,6 +266,7 @@ def upsert_bot_settings(hwnd: int, settings: dict):
                     rule_1_enabled,
                     rule_2_enabled,
                     rule_3_enabled,
+                    rule_4_enabled,
                     take_profit_amount,
                     stop_loss_amount,
                     rule_3_drop_count,
@@ -271,8 +277,8 @@ def upsert_bot_settings(hwnd: int, settings: dict):
         else:
             cur.execute(
                 """
-                INSERT INTO bots (hwnd, name, ticker, total_pnl, open_direction, open_price, open_time, rule_1_enabled, rule_2_enabled, rule_3_enabled, take_profit_amount, stop_loss_amount, rule_3_drop_count, meta)
-                VALUES (?, ?, ?, NULL, NULL, NULL, NULL, ?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO bots (hwnd, name, ticker, total_pnl, open_direction, open_price, open_time, rule_1_enabled, rule_2_enabled, rule_3_enabled, rule_4_enabled, take_profit_amount, stop_loss_amount, rule_3_drop_count, meta)
+                VALUES (?, ?, ?, NULL, NULL, NULL, NULL, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     hwnd,
@@ -281,6 +287,7 @@ def upsert_bot_settings(hwnd: int, settings: dict):
                     rule_1_enabled if rule_1_enabled is not None else 0,
                     rule_2_enabled if rule_2_enabled is not None else 0,
                     rule_3_enabled if rule_3_enabled is not None else 0,
+                    rule_4_enabled if rule_4_enabled is not None else 1,
                     take_profit_amount if take_profit_amount is not None else 0.0,
                     stop_loss_amount if stop_loss_amount is not None else 0.0,
                     rule_3_drop_count if rule_3_drop_count is not None else 0,
