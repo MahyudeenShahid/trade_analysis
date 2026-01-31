@@ -96,9 +96,13 @@ def init_db():
             rule_2_enabled INTEGER,
             rule_3_enabled INTEGER,
             rule_4_enabled INTEGER,
+            rule_5_enabled INTEGER,
             take_profit_amount REAL,
             stop_loss_amount REAL,
             rule_3_drop_count INTEGER,
+            rule_5_down_minutes INTEGER,
+            rule_5_reversal_amount REAL,
+            rule_5_scalp_amount REAL,
             meta TEXT
         )
         """
@@ -113,9 +117,13 @@ def init_db():
             ("rule_2_enabled", "INTEGER"),
             ("rule_3_enabled", "INTEGER"),
             ("rule_4_enabled", "INTEGER"),
+            ("rule_5_enabled", "INTEGER"),
             ("take_profit_amount", "REAL"),
             ("stop_loss_amount", "REAL"),
             ("rule_3_drop_count", "INTEGER"),
+            ("rule_5_down_minutes", "INTEGER"),
+            ("rule_5_reversal_amount", "REAL"),
+            ("rule_5_scalp_amount", "REAL"),
         ]
         for col, typ in bot_additions:
             if col not in existing_bots:

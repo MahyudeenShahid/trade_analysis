@@ -60,7 +60,14 @@ class TradeSimulator:
                 "last_direction": None,
                 "last_price": None,
                 "peak_price": None,
-                "drop_count": 0
+                "drop_count": 0,
+                # Rule #5 state
+                "rule5_down_start": None,
+                "rule5_ready_for_reversal": False,
+                "rule5_reversal_price": None,
+                "rule5_reversal_active": False,
+                "rule5_scalp_active": False,
+                "rule5_last_trend": None,
             }
 
     # ---------------------------------------------------------------
@@ -81,7 +88,7 @@ class TradeSimulator:
     # ---------------------------------------------------------------
     # SIGNAL HANDLER
     # ---------------------------------------------------------------
-    def on_signal(self, trend: str, price_str: Optional[str], ticker: str, auto: bool = True, rule_2_enabled: bool = False, stop_loss_amount: Optional[float] = None, rule_3_enabled: bool = False, rule_3_drop_count: Optional[int] = None, rule_4_enabled: bool = True) -> Dict:
+    def on_signal(self, trend: str, price_str: Optional[str], ticker: str, auto: bool = True, rule_2_enabled: bool = False, stop_loss_amount: Optional[float] = None, rule_3_enabled: bool = False, rule_3_drop_count: Optional[int] = None, rule_4_enabled: bool = True, rule_5_enabled: bool = False, rule_5_down_minutes: Optional[int] = None, rule_5_reversal_amount: Optional[float] = None, rule_5_scalp_amount: Optional[float] = None) -> Dict:
         """Handle signal for a given ticker."""
         ticker = self._normalize_ticker(ticker)
         price = self._parse_price(price_str)
@@ -112,6 +119,14 @@ class TradeSimulator:
             # RULE #4: trade only during market hours (Mon–Fri 9:30–16:00)
             if rule_4_enabled and not self._is_trading_hours():
                 return self.summary()
+
+            # RULE #5: 3-minute downtrend → reversal + scalp
+            if rule_5_enabled:
+                try:
+                    if self.maybe_rule5_trade(ticker, trend, price, rule_5_down_minutes, rule_5_reversal_amount, rule_5_scalp_amount):
+                        return self.summary()
+                except Exception:
+                    pass
             # --------------------------
             # FIRST CYCLE LOGIC (first DOWN special)
             # --------------------------
@@ -207,6 +222,12 @@ class TradeSimulator:
         self.tickers[ticker]["last_price"] = None
         self.tickers[ticker]["peak_price"] = None
         self.tickers[ticker]["drop_count"] = 0
+        # reset rule #5 state unless this was a rule #5 sell
+        if win_reason not in ("RULE_5",):
+            self.tickers[ticker]["rule5_reversal_active"] = False
+            self.tickers[ticker]["rule5_ready_for_reversal"] = False
+            self.tickers[ticker]["rule5_reversal_price"] = None
+            self.tickers[ticker]["rule5_scalp_active"] = False
 
     # ---------------------------------------------------------------
     # LOGGING
@@ -387,9 +408,98 @@ class TradeSimulator:
         return False
 
     # ---------------------------------------------------------------
+    # RULE #5 - 3-MIN DOWNTREND → REVERSAL + SCALP
+    # ---------------------------------------------------------------
+    def maybe_rule5_trade(self, ticker: str, trend: str, current_price: float, down_minutes: Optional[int] = None, reversal_amount: Optional[float] = None, scalp_amount: Optional[float] = None) -> bool:
+        ticker = self._normalize_ticker(ticker)
+        if not ticker:
+            return False
+        self._ensure_ticker(ticker)
+        state = self.tickers[ticker]
+
+        # normalize params
+        try:
+            down_m = int(down_minutes) if down_minutes is not None else 3
+        except Exception:
+            down_m = 3
+        if down_m <= 0:
+            down_m = 3
+        try:
+            rev_amt = float(reversal_amount) if reversal_amount is not None else 2.0
+        except Exception:
+            rev_amt = 2.0
+        if rev_amt <= 0:
+            rev_amt = 2.0
+        try:
+            scalp_amt = float(scalp_amount) if scalp_amount is not None else 0.25
+        except Exception:
+            scalp_amt = 0.25
+        if scalp_amt <= 0:
+            scalp_amt = 0.25
+
+        now = datetime.utcnow()
+        trend = (trend or '').lower()
+
+        # If in reversal trade, wait for price to reach target
+        if state.get('rule5_reversal_active'):
+            try:
+                rp = float(state.get('rule5_reversal_price')) if state.get('rule5_reversal_price') is not None else None
+            except Exception:
+                rp = None
+            if rp is not None and current_price >= (rp + rev_amt):
+                self._sell(ticker, current_price, win_reason="RULE_5")
+                state['rule5_reversal_active'] = False
+                state['rule5_reversal_price'] = None
+                state['rule5_scalp_active'] = True
+                return True
+            # block normal auto-trading while waiting
+            return True
+
+        # If in scalp mode, only scalp on uptrend; reset on non-up trend
+        if state.get('rule5_scalp_active'):
+            if trend != 'up':
+                state['rule5_scalp_active'] = False
+                return False
+            # execute quick scalp trades on each up tick
+            if state.get('position') is None:
+                buy_price = current_price - scalp_amt
+                sell_price = buy_price + scalp_amt
+                self._buy(ticker, buy_price)
+                self._sell(ticker, sell_price, win_reason="RULE_5")
+                return True
+            return True
+
+        # Track continuous downtrend duration
+        if trend == 'down':
+            if state.get('rule5_down_start') is None:
+                state['rule5_down_start'] = now
+            else:
+                try:
+                    elapsed = (now - state.get('rule5_down_start')).total_seconds() / 60.0
+                    if elapsed >= down_m:
+                        state['rule5_ready_for_reversal'] = True
+                except Exception:
+                    pass
+        else:
+            if not state.get('rule5_ready_for_reversal'):
+                state['rule5_down_start'] = None
+
+        # If ready, wait for an uptrend to start reversal trade
+        if state.get('rule5_ready_for_reversal') and trend == 'up':
+            state['rule5_ready_for_reversal'] = False
+            state['rule5_down_start'] = None
+            state['rule5_reversal_price'] = float(current_price)
+            state['rule5_reversal_active'] = True
+            if state.get('position') is None:
+                self._buy(ticker, current_price)
+            return True
+
+        return False
+
+    # ---------------------------------------------------------------
     # RULE #1 MODE - BUY AS USUAL, SELL ONLY ON TAKE PROFIT
     # ---------------------------------------------------------------
-    def on_signal_take_profit_mode(self, trend: str, price_str: Optional[str], ticker: str, take_profit_amount, auto: bool = True, rule_2_enabled: bool = False, stop_loss_amount: Optional[float] = None, rule_3_enabled: bool = False, rule_3_drop_count: Optional[int] = None, rule_4_enabled: bool = True) -> Dict:
+    def on_signal_take_profit_mode(self, trend: str, price_str: Optional[str], ticker: str, take_profit_amount, auto: bool = True, rule_2_enabled: bool = False, stop_loss_amount: Optional[float] = None, rule_3_enabled: bool = False, rule_3_drop_count: Optional[int] = None, rule_4_enabled: bool = True, rule_5_enabled: bool = False, rule_5_down_minutes: Optional[int] = None, rule_5_reversal_amount: Optional[float] = None, rule_5_scalp_amount: Optional[float] = None) -> Dict:
         """In Rule #1 mode, buys may still be opened, but sells only occur via take-profit.
 
         This keeps the system able to enter positions, while overriding all other sell logic.

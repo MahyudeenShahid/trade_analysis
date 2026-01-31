@@ -70,9 +70,13 @@ async def ingest(
             rule2_enabled = False
             rule3_enabled = False
             rule4_enabled = True
+            rule5_enabled = False
             tp_amount = None
             sl_amount = None
             rule3_drop = None
+            rule5_down = None
+            rule5_reversal = None
+            rule5_scalp = None
             if hwnd is not None:
                 try:
                     from db.queries import get_bot_db_entry
@@ -82,26 +86,34 @@ async def ingest(
                         rule2_enabled = bool(bot.get('rule_2_enabled'))
                         rule3_enabled = bool(bot.get('rule_3_enabled'))
                         rule4_enabled = bool(bot.get('rule_4_enabled', 1))
+                        rule5_enabled = bool(bot.get('rule_5_enabled'))
                         tp_amount = bot.get('take_profit_amount')
                         sl_amount = bot.get('stop_loss_amount')
                         rule3_drop = bot.get('rule_3_drop_count')
+                        rule5_down = bot.get('rule_5_down_minutes')
+                        rule5_reversal = bot.get('rule_5_reversal_amount')
+                        rule5_scalp = bot.get('rule_5_scalp_amount')
                 except Exception:
                     rule_enabled = False
                     rule2_enabled = False
                     rule3_enabled = False
                     rule4_enabled = True
+                    rule5_enabled = False
                     tp_amount = None
                     sl_amount = None
                     rule3_drop = None
+                    rule5_down = None
+                    rule5_reversal = None
+                    rule5_scalp = None
 
             if rule_enabled:
                 try:
                     # Rule #1: sell only on take-profit; buys still allowed.
-                    trader.on_signal_take_profit_mode(trend, price, ticker, tp_amount, auto=True, rule_2_enabled=rule2_enabled, stop_loss_amount=sl_amount, rule_3_enabled=rule3_enabled, rule_3_drop_count=rule3_drop, rule_4_enabled=rule4_enabled)
+                    trader.on_signal_take_profit_mode(trend, price, ticker, tp_amount, auto=True, rule_2_enabled=rule2_enabled, stop_loss_amount=sl_amount, rule_3_enabled=rule3_enabled, rule_3_drop_count=rule3_drop, rule_4_enabled=rule4_enabled, rule_5_enabled=rule5_enabled, rule_5_down_minutes=rule5_down, rule_5_reversal_amount=rule5_reversal, rule_5_scalp_amount=rule5_scalp)
                 except Exception:
                     pass
             else:
-                trader.on_signal(trend, price, ticker, auto=True, rule_2_enabled=rule2_enabled, stop_loss_amount=sl_amount, rule_3_enabled=rule3_enabled, rule_3_drop_count=rule3_drop, rule_4_enabled=rule4_enabled)
+                trader.on_signal(trend, price, ticker, auto=True, rule_2_enabled=rule2_enabled, stop_loss_amount=sl_amount, rule_3_enabled=rule3_enabled, rule_3_drop_count=rule3_drop, rule_4_enabled=rule4_enabled, rule_5_enabled=rule5_enabled, rule_5_down_minutes=rule5_down, rule_5_reversal_amount=rule5_reversal, rule_5_scalp_amount=rule5_scalp)
         except Exception:
             # best-effort; ingest should still succeed
             pass

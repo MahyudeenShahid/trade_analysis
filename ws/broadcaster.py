@@ -62,37 +62,49 @@ async def broadcaster_loop():
                             rule2_enabled = False
                             rule3_enabled = False
                             rule4_enabled = True
+                            rule5_enabled = False
                             tp_amount = None
                             sl_amount = None
                             rule3_drop = None
+                            rule5_down = None
+                            rule5_reversal = None
+                            rule5_scalp = None
                             try:
                                 if bot_info and isinstance(bot_info, dict):
                                     rule_enabled = bool(bot_info.get('rule_1_enabled'))
                                     rule2_enabled = bool(bot_info.get('rule_2_enabled'))
                                     rule3_enabled = bool(bot_info.get('rule_3_enabled'))
                                     rule4_enabled = bool(bot_info.get('rule_4_enabled', 1))
+                                    rule5_enabled = bool(bot_info.get('rule_5_enabled'))
                                     tp_amount = bot_info.get('take_profit_amount')
                                     sl_amount = bot_info.get('stop_loss_amount')
                                     rule3_drop = bot_info.get('rule_3_drop_count')
+                                    rule5_down = bot_info.get('rule_5_down_minutes')
+                                    rule5_reversal = bot_info.get('rule_5_reversal_amount')
+                                    rule5_scalp = bot_info.get('rule_5_scalp_amount')
                             except Exception:
                                 rule_enabled = False
                                 rule2_enabled = False
                                 rule3_enabled = False
                                 rule4_enabled = True
+                                rule5_enabled = False
                                 tp_amount = None
                                 sl_amount = None
                                 rule3_drop = None
+                                rule5_down = None
+                                rule5_reversal = None
+                                rule5_scalp = None
 
                             if rule_enabled:
                                 # Rule #1 overrides sell logic: sell only on take-profit.
                                 # Buys are still allowed so the bot can enter positions.
                                 try:
-                                    trader.on_signal_take_profit_mode(trend, price, ticker, tp_amount, auto=True, rule_2_enabled=rule2_enabled, stop_loss_amount=sl_amount, rule_3_enabled=rule3_enabled, rule_3_drop_count=rule3_drop, rule_4_enabled=rule4_enabled)
+                                    trader.on_signal_take_profit_mode(trend, price, ticker, tp_amount, auto=True, rule_2_enabled=rule2_enabled, stop_loss_amount=sl_amount, rule_3_enabled=rule3_enabled, rule_3_drop_count=rule3_drop, rule_4_enabled=rule4_enabled, rule_5_enabled=rule5_enabled, rule_5_down_minutes=rule5_down, rule_5_reversal_amount=rule5_reversal, rule_5_scalp_amount=rule5_scalp)
                                 except Exception:
                                     # best-effort; do not break loop
                                     pass
                             else:
-                                trader.on_signal(trend, price, ticker, auto=True, rule_2_enabled=rule2_enabled, stop_loss_amount=sl_amount, rule_3_enabled=rule3_enabled, rule_3_drop_count=rule3_drop, rule_4_enabled=rule4_enabled)
+                                trader.on_signal(trend, price, ticker, auto=True, rule_2_enabled=rule2_enabled, stop_loss_amount=sl_amount, rule_3_enabled=rule3_enabled, rule_3_drop_count=rule3_drop, rule_4_enabled=rule4_enabled, rule_5_enabled=rule5_enabled, rule_5_down_minutes=rule5_down, rule_5_reversal_amount=rule5_reversal, rule_5_scalp_amount=rule5_scalp)
                     except Exception:
                         pass
 
