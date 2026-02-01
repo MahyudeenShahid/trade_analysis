@@ -113,6 +113,8 @@ def init_db():
             rule_8_buy_offset REAL,
             rule_8_sell_offset REAL,
             rule_9_amount REAL,
+            rule_9_flips INTEGER,
+            rule_9_window_minutes INTEGER,
             meta TEXT
         )
         """
@@ -144,6 +146,8 @@ def init_db():
             ("rule_8_buy_offset", "REAL"),
             ("rule_8_sell_offset", "REAL"),
             ("rule_9_amount", "REAL"),
+            ("rule_9_flips", "INTEGER"),
+            ("rule_9_window_minutes", "INTEGER"),
         ]
         for col, typ in bot_additions:
             if col not in existing_bots:
