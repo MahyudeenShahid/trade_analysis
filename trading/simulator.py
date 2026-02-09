@@ -36,6 +36,8 @@ def persist_trade_as_record(trade: dict):
         buy_time = trade.get("buy_time") or meta.get("entry_time") or None
         sell_time = trade.get("sell_time") or meta.get("exit_time") or None
         win_reason = trade.get("win_reason") or (meta.get("win_reason") if isinstance(meta, dict) else None)
+        bot_id = trade.get("bot_id") or (meta.get("bot_id") if isinstance(meta, dict) else None)
+        bot_name = trade.get("bot_name") or (meta.get("bot_name") if isinstance(meta, dict) else None)
 
         # If the trade uses a generic `price` and `ts` fields (common shape),
         # infer buy/sell values from them based on direction when explicit
@@ -160,13 +162,15 @@ def persist_trade_as_record(trade: dict):
 
                         # Perform update: set buy_price, buy_time, sell_price, sell_time, meta
                         cur.execute(
-                            "UPDATE records SET buy_price = ?, buy_time = ?, sell_price = ?, sell_time = ?, win_reason = ?, meta = ? WHERE id = ?",
+                            "UPDATE records SET buy_price = ?, buy_time = ?, sell_price = ?, sell_time = ?, win_reason = ?, bot_id = ?, bot_name = ?, meta = ? WHERE id = ?",
                             (
                                 db_buy_price,
                                 db_buy_time,
                                 sell_price,
                                 sell_time or ts,
                                 win_reason,
+                                bot_id,
+                                bot_name,
                                 json.dumps(merged_meta),
                                 rec_id,
                             ),
@@ -191,6 +195,8 @@ def persist_trade_as_record(trade: dict):
             "buy_time": buy_time,
             "sell_time": sell_time,
             "win_reason": win_reason,
+            "bot_id": bot_id,
+            "bot_name": bot_name,
             "meta": trade,
         }
         # If both buy and sell price are known, compute profit and include in meta
@@ -221,5 +227,19 @@ def persist_trade_as_record(trade: dict):
 
 # Initialize the global trader instance with persistence callback
 trader = TradeSimulator(on_trade=persist_trade_as_record)
+
+
+def clear_bot_state(bot_id: str):
+    try:
+        trader.clear_bot(bot_id)
+    except Exception:
+        pass
+
+
+def clear_all_state():
+    try:
+        trader.clear_all()
+    except Exception:
+        pass
 
 __all__ = ["trader", "persist_trade_as_record"]

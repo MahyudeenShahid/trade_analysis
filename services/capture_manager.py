@@ -5,7 +5,7 @@ import threading
 from typing import Optional
 
 from background_capture_service import BackgroundCaptureService
-from db.queries import get_bot_db_entry
+from services.bot_registry import get_crop
 
 
 class CaptureManager:
@@ -53,24 +53,22 @@ class CaptureManager:
             svc.set_interval(max(0.5, float(interval)))
             if not svc.set_target_window(hwnd):
                 return False
-            # Apply any persisted per-bot crop settings from DB before starting
+            # Apply any in-memory crop settings for this hwnd before starting
             try:
-                bot_row = get_bot_db_entry(hwnd)
-                if bot_row and isinstance(bot_row.get('meta'), dict):
-                    crop = bot_row.get('meta', {}).get('crop')
-                    if isinstance(crop, dict):
-                        if 'left' in crop:
-                            try: svc.capture.left_crop_frac = float(crop.get('left'))
-                            except Exception: pass
-                        if 'right' in crop:
-                            try: svc.capture.right_crop_frac = float(crop.get('right'))
-                            except Exception: pass
-                        if 'top' in crop:
-                            try: svc.capture.top_crop_frac = float(crop.get('top'))
-                            except Exception: pass
-                        if 'bottom' in crop:
-                            try: svc.capture.bottom_crop_frac = float(crop.get('bottom'))
-                            except Exception: pass
+                crop = get_crop(hwnd)
+                if isinstance(crop, dict):
+                    if 'left' in crop:
+                        try: svc.capture.left_crop_frac = float(crop.get('left'))
+                        except Exception: pass
+                    if 'right' in crop:
+                        try: svc.capture.right_crop_frac = float(crop.get('right'))
+                        except Exception: pass
+                    if 'top' in crop:
+                        try: svc.capture.top_crop_frac = float(crop.get('top'))
+                        except Exception: pass
+                    if 'bottom' in crop:
+                        try: svc.capture.bottom_crop_frac = float(crop.get('bottom'))
+                        except Exception: pass
             except Exception:
                 pass
             started = svc.start()

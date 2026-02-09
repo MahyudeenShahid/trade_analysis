@@ -43,6 +43,8 @@ def init_db():
             buy_time TEXT,
             sell_time TEXT,
             win_reason TEXT,
+            bot_id TEXT,
+            bot_name TEXT,
             meta TEXT
         )
         """
@@ -57,6 +59,8 @@ def init_db():
         ("buy_time", "TEXT"),
         ("sell_time", "TEXT"),
         ("win_reason", "TEXT"),
+        ("bot_id", "TEXT"),
+        ("bot_name", "TEXT"),
     ]
     for col, typ in additions:
         if col not in existing:

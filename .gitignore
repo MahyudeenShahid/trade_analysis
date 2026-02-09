@@ -12,3 +12,5 @@ migrations/__pycache__
 migrations/*.pyc
 backend_data.db
 screenshots/
+trade_screenshots/
+logs/

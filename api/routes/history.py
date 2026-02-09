@@ -13,6 +13,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from api.dependencies import require_api_key
 from config.settings import UPLOADS_DIR
 from db.queries import query_records, get_latest_record, save_observation
+from services.bot_registry import list_bots_by_hwnd
 from trading.simulator import trader
 
 router = APIRouter(prefix="", tags=["history"])
@@ -87,63 +88,52 @@ async def ingest(
             rule8_buy = None
             rule8_sell = None
             rule9_amount = None
+            rule9_flips = None
+            rule9_window = None
+            bot_list = []
             if hwnd is not None:
                 try:
-                    from db.queries import get_bot_db_entry
-                    bot = get_bot_db_entry(int(hwnd))
-                    if bot and isinstance(bot, dict):
-                        rule_enabled = bool(bot.get('rule_1_enabled'))
-                        rule2_enabled = bool(bot.get('rule_2_enabled'))
-                        rule3_enabled = bool(bot.get('rule_3_enabled'))
-                        rule4_enabled = bool(bot.get('rule_4_enabled', 1))
-                        rule5_enabled = bool(bot.get('rule_5_enabled'))
-                        rule6_enabled = bool(bot.get('rule_6_enabled'))
-                        rule7_enabled = bool(bot.get('rule_7_enabled'))
-                        rule8_enabled = bool(bot.get('rule_8_enabled'))
-                        rule9_enabled = bool(bot.get('rule_9_enabled'))
-                        tp_amount = bot.get('take_profit_amount')
-                        sl_amount = bot.get('stop_loss_amount')
-                        rule3_drop = bot.get('rule_3_drop_count')
-                        rule5_down = bot.get('rule_5_down_minutes')
-                        rule5_reversal = bot.get('rule_5_reversal_amount')
-                        rule5_scalp = bot.get('rule_5_scalp_amount')
-                        rule6_down = bot.get('rule_6_down_minutes')
-                        rule6_profit = bot.get('rule_6_profit_amount')
-                        rule7_up = bot.get('rule_7_up_minutes')
-                        rule8_buy = bot.get('rule_8_buy_offset')
-                        rule8_sell = bot.get('rule_8_sell_offset')
-                        rule9_amount = bot.get('rule_9_amount')
+                    bot_list = list_bots_by_hwnd(int(hwnd))
                 except Exception:
-                    rule_enabled = False
-                    rule2_enabled = False
-                    rule3_enabled = False
-                    rule4_enabled = True
-                    rule5_enabled = False
-                    rule6_enabled = False
-                    rule7_enabled = False
-                    rule8_enabled = False
-                    rule9_enabled = False
-                    tp_amount = None
-                    sl_amount = None
-                    rule3_drop = None
-                    rule5_down = None
-                    rule5_reversal = None
-                    rule5_scalp = None
-                    rule6_down = None
-                    rule6_profit = None
-                    rule7_up = None
-                    rule8_buy = None
-                    rule8_sell = None
-                    rule9_amount = None
+                    bot_list = []
 
-            if rule_enabled:
+            for bot in bot_list:
                 try:
-                    # Rule #1: sell only on take-profit; buys still allowed.
-                    trader.on_signal_take_profit_mode(trend, price, ticker, tp_amount, auto=True, rule_2_enabled=rule2_enabled, stop_loss_amount=sl_amount, rule_3_enabled=rule3_enabled, rule_3_drop_count=rule3_drop, rule_4_enabled=rule4_enabled, rule_5_enabled=rule5_enabled, rule_5_down_minutes=rule5_down, rule_5_reversal_amount=rule5_reversal, rule_5_scalp_amount=rule5_scalp, rule_6_enabled=rule6_enabled, rule_6_down_minutes=rule6_down, rule_6_profit_amount=rule6_profit, rule_7_enabled=rule7_enabled, rule_7_up_minutes=rule7_up, rule_8_enabled=rule8_enabled, rule_8_buy_offset=rule8_buy, rule_8_sell_offset=rule8_sell, rule_9_enabled=rule9_enabled, rule_9_amount=rule9_amount)
+                    rule_enabled = bool(bot.get('rule_1_enabled'))
+                    rule2_enabled = bool(bot.get('rule_2_enabled'))
+                    rule3_enabled = bool(bot.get('rule_3_enabled'))
+                    rule4_enabled = bool(bot.get('rule_4_enabled', 1))
+                    rule5_enabled = bool(bot.get('rule_5_enabled'))
+                    rule6_enabled = bool(bot.get('rule_6_enabled'))
+                    rule7_enabled = bool(bot.get('rule_7_enabled'))
+                    rule8_enabled = bool(bot.get('rule_8_enabled'))
+                    rule9_enabled = bool(bot.get('rule_9_enabled'))
+                    tp_amount = bot.get('take_profit_amount')
+                    sl_amount = bot.get('stop_loss_amount')
+                    rule3_drop = bot.get('rule_3_drop_count')
+                    rule5_down = bot.get('rule_5_down_minutes')
+                    rule5_reversal = bot.get('rule_5_reversal_amount')
+                    rule5_scalp = bot.get('rule_5_scalp_amount')
+                    rule6_down = bot.get('rule_6_down_minutes')
+                    rule6_profit = bot.get('rule_6_profit_amount')
+                    rule7_up = bot.get('rule_7_up_minutes')
+                    rule8_buy = bot.get('rule_8_buy_offset')
+                    rule8_sell = bot.get('rule_8_sell_offset')
+                    rule9_amount = bot.get('rule_9_amount')
+                    rule9_flips = bot.get('rule_9_flips')
+                    rule9_window = bot.get('rule_9_window_minutes')
+                    bot_id = bot.get('bot_id') or bot.get('id')
+                    bot_name = bot.get('name')
                 except Exception:
-                    pass
-            else:
-                trader.on_signal(trend, price, ticker, auto=True, rule_2_enabled=rule2_enabled, stop_loss_amount=sl_amount, rule_3_enabled=rule3_enabled, rule_3_drop_count=rule3_drop, rule_4_enabled=rule4_enabled, rule_5_enabled=rule5_enabled, rule_5_down_minutes=rule5_down, rule_5_reversal_amount=rule5_reversal, rule_5_scalp_amount=rule5_scalp, rule_6_enabled=rule6_enabled, rule_6_down_minutes=rule6_down, rule_6_profit_amount=rule6_profit, rule_7_enabled=rule7_enabled, rule_7_up_minutes=rule7_up, rule_8_enabled=rule8_enabled, rule_8_buy_offset=rule8_buy, rule_8_sell_offset=rule8_sell, rule_9_enabled=rule9_enabled, rule_9_amount=rule9_amount)
+                    continue
+
+                if rule_enabled:
+                    try:
+                        trader.on_signal_take_profit_mode(trend, price, ticker, tp_amount, auto=True, rule_2_enabled=rule2_enabled, stop_loss_amount=sl_amount, rule_3_enabled=rule3_enabled, rule_3_drop_count=rule3_drop, rule_4_enabled=rule4_enabled, rule_5_enabled=rule5_enabled, rule_5_down_minutes=rule5_down, rule_5_reversal_amount=rule5_reversal, rule_5_scalp_amount=rule5_scalp, rule_6_enabled=rule6_enabled, rule_6_down_minutes=rule6_down, rule_6_profit_amount=rule6_profit, rule_7_enabled=rule7_enabled, rule_7_up_minutes=rule7_up, rule_8_enabled=rule8_enabled, rule_8_buy_offset=rule8_buy, rule_8_sell_offset=rule8_sell, rule_9_enabled=rule9_enabled, rule_9_amount=rule9_amount, rule_9_flips=rule9_flips, rule_9_window_minutes=rule9_window, bot_id=bot_id, bot_name=bot_name)
+                    except Exception:
+                        pass
+                else:
+                    trader.on_signal(trend, price, ticker, auto=True, rule_2_enabled=rule2_enabled, stop_loss_amount=sl_amount, rule_3_enabled=rule3_enabled, rule_3_drop_count=rule3_drop, rule_4_enabled=rule4_enabled, rule_5_enabled=rule5_enabled, rule_5_down_minutes=rule5_down, rule_5_reversal_amount=rule5_reversal, rule_5_scalp_amount=rule5_scalp, rule_6_enabled=rule6_enabled, rule_6_down_minutes=rule6_down, rule_6_profit_amount=rule6_profit, rule_7_enabled=rule7_enabled, rule_7_up_minutes=rule7_up, rule_8_enabled=rule8_enabled, rule_8_buy_offset=rule8_buy, rule_8_sell_offset=rule8_sell, rule_9_enabled=rule9_enabled, rule_9_amount=rule9_amount, rule_9_flips=rule9_flips, rule_9_window_minutes=rule9_window, bot_id=bot_id, bot_name=bot_name)
         except Exception:
             # best-effort; ingest should still succeed
             pass
@@ -171,6 +161,8 @@ def api_latest():
 def api_history(
     days: int = 7,
     ticker: Optional[str] = None,
+    bot_id: Optional[str] = None,
+    bot_name: Optional[str] = None,
     start_ts: Optional[str] = None,
     end_ts: Optional[str] = None,
     trend: Optional[str] = None,
@@ -208,6 +200,12 @@ def api_history(
     if ticker:
         clauses.append("ticker = ?")
         params.append(ticker)
+    if bot_id:
+        clauses.append("bot_id = ?")
+        params.append(bot_id)
+    if bot_name:
+        clauses.append("bot_name LIKE ?")
+        params.append(f"%{bot_name}%")
 
     if trend:
         clauses.append("trend = ?")

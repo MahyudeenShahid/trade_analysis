@@ -47,16 +47,31 @@ class TradeSimulator:
         except Exception:
             return ''
 
-    def _ensure_ticker(self, ticker: str):
-        ticker = self._normalize_ticker(ticker)
-        if not ticker:
+    def _normalize_bot_id(self, bot_id: Optional[str]) -> str:
+        try:
+            return str(bot_id or '').strip()
+        except Exception:
+            return ''
+
+    def _state_key(self, bot_id: Optional[str], ticker: str) -> str:
+        bid = self._normalize_bot_id(bot_id)
+        if bid:
+            return bid
+        return self._normalize_ticker(ticker)
+
+    def _ensure_ticker(self, key: str, ticker: Optional[str] = None, bot_id: Optional[str] = None, bot_name: Optional[str] = None):
+        key = str(key or '').strip()
+        if not key:
             return
-        if ticker not in self.tickers:
-            self.tickers[ticker] = {
+        if key not in self.tickers:
+            self.tickers[key] = {
                 "position": None,                 # current open trade
                 "first_cycle_done": False,        # special first-cycle completed
                 "waiting_for_second_down": False, # first-cycle flag
                 "trade_history": [],              # ticker-specific trades
+                "ticker": self._normalize_ticker(ticker) if ticker else None,
+                "bot_id": self._normalize_bot_id(bot_id) if bot_id else None,
+                "bot_name": bot_name,
                 "last_direction": None,
                 "last_price": None,
                 "peak_price": None,
@@ -83,6 +98,13 @@ class TradeSimulator:
                 "rule9_flip_count": 0,
                 "rule9_last_trend": None,
             }
+        else:
+            if ticker and not self.tickers[key].get("ticker"):
+                self.tickers[key]["ticker"] = self._normalize_ticker(ticker)
+            if bot_id and not self.tickers[key].get("bot_id"):
+                self.tickers[key]["bot_id"] = self._normalize_bot_id(bot_id)
+            if bot_name and not self.tickers[key].get("bot_name"):
+                self.tickers[key]["bot_name"] = bot_name
 
     # ---------------------------------------------------------------
     # RULE #4 - TRADING HOURS
@@ -102,21 +124,22 @@ class TradeSimulator:
     # ---------------------------------------------------------------
     # SIGNAL HANDLER
     # ---------------------------------------------------------------
-    def on_signal(self, trend: str, price_str: Optional[str], ticker: str, auto: bool = True, rule_2_enabled: bool = False, stop_loss_amount: Optional[float] = None, rule_3_enabled: bool = False, rule_3_drop_count: Optional[int] = None, rule_4_enabled: bool = True, rule_5_enabled: bool = False, rule_5_down_minutes: Optional[int] = None, rule_5_reversal_amount: Optional[float] = None, rule_5_scalp_amount: Optional[float] = None, rule_6_enabled: bool = False, rule_6_down_minutes: Optional[int] = None, rule_6_profit_amount: Optional[float] = None, rule_7_enabled: bool = False, rule_7_up_minutes: Optional[int] = None, rule_8_enabled: bool = False, rule_8_buy_offset: Optional[float] = None, rule_8_sell_offset: Optional[float] = None, rule_9_enabled: bool = False, rule_9_amount: Optional[float] = None, rule_9_flips: Optional[int] = None, rule_9_window_minutes: Optional[int] = None) -> Dict:
+    def on_signal(self, trend: str, price_str: Optional[str], ticker: str, auto: bool = True, rule_2_enabled: bool = False, stop_loss_amount: Optional[float] = None, rule_3_enabled: bool = False, rule_3_drop_count: Optional[int] = None, rule_4_enabled: bool = True, rule_5_enabled: bool = False, rule_5_down_minutes: Optional[int] = None, rule_5_reversal_amount: Optional[float] = None, rule_5_scalp_amount: Optional[float] = None, rule_6_enabled: bool = False, rule_6_down_minutes: Optional[int] = None, rule_6_profit_amount: Optional[float] = None, rule_7_enabled: bool = False, rule_7_up_minutes: Optional[int] = None, rule_8_enabled: bool = False, rule_8_buy_offset: Optional[float] = None, rule_8_sell_offset: Optional[float] = None, rule_9_enabled: bool = False, rule_9_amount: Optional[float] = None, rule_9_flips: Optional[int] = None, rule_9_window_minutes: Optional[int] = None, bot_id: Optional[str] = None, bot_name: Optional[str] = None) -> Dict:
         """Handle signal for a given ticker."""
         ticker = self._normalize_ticker(ticker)
         price = self._parse_price(price_str)
-        if price is None or not ticker:
+        state_key = self._state_key(bot_id, ticker)
+        if price is None or not state_key:
             return self.summary()
 
         trend = trend.lower()
-        self._ensure_ticker(ticker)
-        state = self.tickers[ticker]
+        self._ensure_ticker(state_key, ticker=ticker, bot_id=bot_id, bot_name=bot_name)
+        state = self.tickers[state_key]
 
         # RULE #2: stop loss at buy price - stop_loss_amount
         if rule_2_enabled:
             try:
-                if self.maybe_stop_loss_sell(ticker, price, stop_loss_amount):
+                if self.maybe_stop_loss_sell(state_key, price, stop_loss_amount):
                     return self.summary()
             except Exception:
                 pass
@@ -124,7 +147,7 @@ class TradeSimulator:
         # RULE #3: consecutive drops from peak
         if rule_3_enabled:
             try:
-                if self.maybe_consecutive_drops_sell(ticker, price, rule_3_drop_count):
+                if self.maybe_consecutive_drops_sell(state_key, price, rule_3_drop_count):
                     return self.summary()
             except Exception:
                 pass
@@ -137,35 +160,35 @@ class TradeSimulator:
             # RULE #5: 3-minute downtrend → reversal + scalp
             if rule_5_enabled:
                 try:
-                    if self.maybe_rule5_trade(ticker, trend, price, rule_5_down_minutes, rule_5_reversal_amount, rule_5_scalp_amount):
+                    if self.maybe_rule5_trade(state_key, trend, price, rule_5_down_minutes, rule_5_reversal_amount, rule_5_scalp_amount):
                         return self.summary()
                 except Exception:
                     pass
             # RULE #6: long wait → buy on reversal and sell at profit target
             if rule_6_enabled:
                 try:
-                    if self.maybe_rule6_trade(ticker, trend, price, rule_6_down_minutes, rule_6_profit_amount):
+                    if self.maybe_rule6_trade(state_key, trend, price, rule_6_down_minutes, rule_6_profit_amount):
                         return self.summary()
                 except Exception:
                     pass
             # RULE #7: strong momentum buy after uptrend duration
             if rule_7_enabled:
                 try:
-                    if self.maybe_rule7_trade(ticker, trend, price, rule_7_up_minutes):
+                    if self.maybe_rule7_trade(state_key, trend, price, rule_7_up_minutes):
                         return self.summary()
                 except Exception:
                     pass
             # RULE #8: always buy/sell using offsets from current price
             if rule_8_enabled:
                 try:
-                    if self.maybe_rule8_trade(ticker, price, rule_8_buy_offset, rule_8_sell_offset):
+                    if self.maybe_rule8_trade(state_key, price, rule_8_buy_offset, rule_8_sell_offset):
                         return self.summary()
                 except Exception:
                     pass
             # RULE #9: N up/down flips within M minutes → quick scalp
             if rule_9_enabled:
                 try:
-                    if self.maybe_rule9_trade(ticker, trend, price, rule_9_amount, rule_9_flips, rule_9_window_minutes):
+                    if self.maybe_rule9_trade(state_key, trend, price, rule_9_amount, rule_9_flips, rule_9_window_minutes):
                         return self.summary()
                 except Exception:
                     pass
@@ -174,7 +197,7 @@ class TradeSimulator:
             # --------------------------
             if not state["first_cycle_done"]:
                 if trend == "down" and state["position"] is None:
-                    self._buy(ticker, price)
+                    self._buy(state_key, price)
                     state["waiting_for_second_down"] = True
                     return self.summary()
 
@@ -183,7 +206,7 @@ class TradeSimulator:
                     return self.summary()
 
                 if trend == "down" and state["waiting_for_second_down"]:
-                    self._sell(ticker, price)
+                    self._sell(state_key, price)
                     state["first_cycle_done"] = True
                     state["waiting_for_second_down"] = False
                     return self.summary()
@@ -191,18 +214,18 @@ class TradeSimulator:
                 # If first trend is UP → start normal mode
                 if trend == "up" and state["position"] is None:
                     state["first_cycle_done"] = True
-                    self._buy(ticker, price)
+                    self._buy(state_key, price)
                     return self.summary()
 
             # --------------------------
             # NORMAL MODE
             # --------------------------
             if trend == "up" and state["position"] is None:
-                self._buy(ticker, price)
+                self._buy(state_key, price)
 
             elif trend == "down" and state["position"] is not None:
                 win_reason = "RULE_7" if state.get("rule7_active") else None
-                self._sell(ticker, price, win_reason=win_reason)
+                self._sell(state_key, price, win_reason=win_reason)
                 state["rule7_active"] = False
 
         return self.summary()
@@ -210,79 +233,83 @@ class TradeSimulator:
     # ---------------------------------------------------------------
     # MANUAL TOGGLE (per ticker)
     # ---------------------------------------------------------------
-    def manual_toggle(self, price_str: Optional[str], ticker: str) -> Dict:
+    def manual_toggle(self, price_str: Optional[str], ticker: str, bot_id: Optional[str] = None, bot_name: Optional[str] = None) -> Dict:
         ticker = self._normalize_ticker(ticker)
         price = self._parse_price(price_str)
-        if price is None or not ticker:
+        state_key = self._state_key(bot_id, ticker)
+        if price is None or not state_key:
             return self.summary()
 
-        self._ensure_ticker(ticker)
-        state = self.tickers[ticker]
+        self._ensure_ticker(state_key, ticker=ticker, bot_id=bot_id, bot_name=bot_name)
+        state = self.tickers[state_key]
 
         if state["position"] is None:
-            self._buy(ticker, price)
+            self._buy(state_key, price)
         else:
-            self._sell(ticker, price)
+            self._sell(state_key, price)
 
         return self.summary()
 
     # ---------------------------------------------------------------
     # BUY / SELL
     # ---------------------------------------------------------------
-    def _buy(self, ticker: str, price: float):
-        ticker = self._normalize_ticker(ticker)
-        if not ticker:
+    def _buy(self, key: str, price: float):
+        key = str(key or '').strip()
+        if not key:
             return
-        self.tickers[ticker]["position"] = {
+        self.tickers[key]["position"] = {
             "entry": price,
-            "ticker": ticker,
+            "ticker": self.tickers[key].get("ticker") or key,
             "ts": datetime.utcnow().isoformat() + 'Z'
         }
-        self.tickers[ticker]["last_direction"] = "buy"
+        self.tickers[key]["last_direction"] = "buy"
         # initialize rule state
         try:
-            self.tickers[ticker]["last_price"] = float(price)
-            self.tickers[ticker]["peak_price"] = float(price)
-            self.tickers[ticker]["drop_count"] = 0
+            self.tickers[key]["last_price"] = float(price)
+            self.tickers[key]["peak_price"] = float(price)
+            self.tickers[key]["drop_count"] = 0
         except Exception:
-            self.tickers[ticker]["last_price"] = None
-            self.tickers[ticker]["peak_price"] = None
-            self.tickers[ticker]["drop_count"] = 0
-        self._log_trade(ticker, "buy", price, None, win_reason=None)
+            self.tickers[key]["last_price"] = None
+            self.tickers[key]["peak_price"] = None
+            self.tickers[key]["drop_count"] = 0
+        self._log_trade(key, "buy", price, None, win_reason=None)
 
-    def _sell(self, ticker: str, price: float, win_reason: Optional[str] = None):
-        ticker = self._normalize_ticker(ticker)
-        if not ticker:
+    def _sell(self, key: str, price: float, win_reason: Optional[str] = None):
+        key = str(key or '').strip()
+        if not key:
             return
-        pos = self.tickers[ticker]["position"]
+        pos = self.tickers[key]["position"]
         if pos is None:
             return
 
         profit = price - pos["entry"]
-        self.tickers[ticker]["last_direction"] = "sell"
-        self._log_trade(ticker, "sell", price, profit, win_reason=win_reason)
-        self.tickers[ticker]["position"] = None
+        self.tickers[key]["last_direction"] = "sell"
+        self._log_trade(key, "sell", price, profit, win_reason=win_reason)
+        self.tickers[key]["position"] = None
         # reset rule state
-        self.tickers[ticker]["last_price"] = None
-        self.tickers[ticker]["peak_price"] = None
-        self.tickers[ticker]["drop_count"] = 0
+        self.tickers[key]["last_price"] = None
+        self.tickers[key]["peak_price"] = None
+        self.tickers[key]["drop_count"] = 0
         # reset rule #7 state
-        self.tickers[ticker]["rule7_active"] = False
+        self.tickers[key]["rule7_active"] = False
         # reset rule #8 state
-        self.tickers[ticker]["rule8_active"] = False
+        self.tickers[key]["rule8_active"] = False
         # reset rule #5 state unless this was a rule #5 sell
         if win_reason not in ("RULE_5",):
-            self.tickers[ticker]["rule5_reversal_active"] = False
-            self.tickers[ticker]["rule5_ready_for_reversal"] = False
-            self.tickers[ticker]["rule5_reversal_price"] = None
-            self.tickers[ticker]["rule5_scalp_active"] = False
+            self.tickers[key]["rule5_reversal_active"] = False
+            self.tickers[key]["rule5_ready_for_reversal"] = False
+            self.tickers[key]["rule5_reversal_price"] = None
+            self.tickers[key]["rule5_scalp_active"] = False
 
     # ---------------------------------------------------------------
     # LOGGING
     # ---------------------------------------------------------------
-    def _log_trade(self, ticker: str, direction: str, price: float, profit: Optional[float], win_reason: Optional[str] = None):
+    def _log_trade(self, key: str, direction: str, price: float, profit: Optional[float], win_reason: Optional[str] = None):
+        state = self.tickers.get(key, {})
         entry = {
-            "ticker": ticker,
+            "ticker": state.get("ticker") or key,
+            "bot_id": state.get("bot_id"),
+            "bot_name": state.get("bot_name"),
             "direction": direction,
             "price": price,
             "profit": profit,
@@ -292,7 +319,7 @@ class TradeSimulator:
 
         # Add to global history and ticker-specific history
         self.trade_history.append(entry)
-        self.tickers[ticker]["trade_history"].append(entry)
+        self.tickers[key]["trade_history"].append(entry)
 
         # Optional callback
         if self.on_trade:
@@ -309,11 +336,11 @@ class TradeSimulator:
 
         Returns True when a sell was executed.
         """
-        ticker = self._normalize_ticker(ticker)
-        if not ticker:
+        key = str(ticker or '').strip()
+        if not key:
             return False
-        self._ensure_ticker(ticker)
-        state = self.tickers[ticker]
+        self._ensure_ticker(key)
+        state = self.tickers[key]
         pos = state.get('position')
         if not pos:
             return False
@@ -344,7 +371,7 @@ class TradeSimulator:
             return False
         try:
             if cp >= (float(entry) + tp):
-                self._sell(ticker, cp, win_reason="TAKE_PROFIT_RULE_1")
+                self._sell(key, cp, win_reason="TAKE_PROFIT_RULE_1")
                 return True
         except Exception:
             return False
@@ -354,11 +381,11 @@ class TradeSimulator:
     # RULE #6 - LONG WAIT (DOWN > N MIN → UP BUY → SELL AT PROFIT)
     # ---------------------------------------------------------------
     def maybe_rule6_trade(self, ticker: str, trend: str, current_price: float, down_minutes: Optional[int] = None, profit_amount: Optional[float] = None) -> bool:
-        ticker = self._normalize_ticker(ticker)
-        if not ticker:
+        key = str(ticker or '').strip()
+        if not key:
             return False
-        self._ensure_ticker(ticker)
-        state = self.tickers[ticker]
+        self._ensure_ticker(key)
+        state = self.tickers[key]
 
         try:
             down_m = int(down_minutes) if down_minutes is not None else 5
@@ -381,7 +408,7 @@ class TradeSimulator:
             pos = state.get('position')
             entry = pos.get('entry') if isinstance(pos, dict) else None
             if entry is not None and current_price >= (float(entry) + prof_amt):
-                self._sell(ticker, current_price, win_reason="RULE_6")
+                self._sell(key, current_price, win_reason="RULE_6")
                 state['rule6_active'] = False
                 return True
             # block normal auto-trading while waiting
@@ -407,7 +434,7 @@ class TradeSimulator:
             state['rule6_ready_for_buy'] = False
             state['rule6_down_start'] = None
             if state.get('position') is None:
-                self._buy(ticker, current_price)
+                self._buy(key, current_price)
             state['rule6_active'] = True
             return True
 
@@ -417,11 +444,11 @@ class TradeSimulator:
     # RULE #7 - STRONG MOMENTUM BUY AFTER UPTREND
     # ---------------------------------------------------------------
     def maybe_rule7_trade(self, ticker: str, trend: str, current_price: float, up_minutes: Optional[int] = None) -> bool:
-        ticker = self._normalize_ticker(ticker)
-        if not ticker:
+        key = str(ticker or '').strip()
+        if not key:
             return False
-        self._ensure_ticker(ticker)
-        state = self.tickers[ticker]
+        self._ensure_ticker(key)
+        state = self.tickers[key]
 
         try:
             up_m = int(up_minutes) if up_minutes is not None else 3
@@ -457,7 +484,7 @@ class TradeSimulator:
             state['rule7_ready_for_buy'] = False
             state['rule7_up_start'] = None
             if state.get('position') is None:
-                self._buy(ticker, current_price)
+                self._buy(key, current_price)
             state['rule7_active'] = True
             return True
 
@@ -467,11 +494,11 @@ class TradeSimulator:
     # RULE #8 - ALWAYS PLACE OFFSET BUY/SELL
     # ---------------------------------------------------------------
     def maybe_rule8_trade(self, ticker: str, current_price: float, buy_offset: Optional[float] = None, sell_offset: Optional[float] = None) -> bool:
-        ticker = self._normalize_ticker(ticker)
-        if not ticker:
+        key = str(ticker or '').strip()
+        if not key:
             return False
-        self._ensure_ticker(ticker)
-        state = self.tickers[ticker]
+        self._ensure_ticker(key)
+        state = self.tickers[key]
 
         try:
             bo = float(buy_offset) if buy_offset is not None else 0.25
@@ -485,12 +512,12 @@ class TradeSimulator:
         # Buy at current - offset, sell at current + offset
         if state.get('position') is None:
             buy_price = float(current_price) - bo
-            self._buy(ticker, buy_price)
+            self._buy(key, buy_price)
             state['rule8_active'] = True
             return True
         # If holding, sell using offset from current price
         sell_price = float(current_price) + so
-        self._sell(ticker, sell_price, win_reason="RULE_8")
+        self._sell(key, sell_price, win_reason="RULE_8")
         state['rule8_active'] = False
         return True
 
@@ -498,11 +525,11 @@ class TradeSimulator:
     # RULE #9 - UP/DOWN FLIPS (3 CYCLES IN 3 MIN)
     # ---------------------------------------------------------------
     def maybe_rule9_trade(self, ticker: str, trend: str, current_price: float, amount: Optional[float] = None, flips: Optional[int] = None, window_minutes: Optional[int] = None) -> bool:
-        ticker = self._normalize_ticker(ticker)
-        if not ticker:
+        key = str(ticker or '').strip()
+        if not key:
             return False
-        self._ensure_ticker(ticker)
-        state = self.tickers[ticker]
+        self._ensure_ticker(key)
+        state = self.tickers[key]
 
         try:
             amt = float(amount) if amount is not None else 0.25
@@ -558,8 +585,8 @@ class TradeSimulator:
             if state.get('position') is None:
                 buy_price = float(current_price) - amt
                 sell_price = buy_price + amt
-                self._buy(ticker, buy_price)
-                self._sell(ticker, sell_price, win_reason="RULE_9")
+                self._buy(key, buy_price)
+                self._sell(key, sell_price, win_reason="RULE_9")
                 return True
         return False
 
@@ -568,11 +595,11 @@ class TradeSimulator:
     # ---------------------------------------------------------------
     def maybe_stop_loss_sell(self, ticker: str, current_price, stop_loss_amount: Optional[float] = None) -> bool:
         """Sell immediately when current_price <= entry - stop_loss_amount (Rule #2)."""
-        ticker = self._normalize_ticker(ticker)
-        if not ticker:
+        key = str(ticker or '').strip()
+        if not key:
             return False
-        self._ensure_ticker(ticker)
-        state = self.tickers[ticker]
+        self._ensure_ticker(key)
+        state = self.tickers[key]
         pos = state.get('position')
         if not pos:
             return False
@@ -606,7 +633,7 @@ class TradeSimulator:
 
         try:
             if cp <= (float(entry) - sl):
-                self._sell(ticker, cp, win_reason="STOP_LOSS_RULE_2")
+                self._sell(key, cp, win_reason="STOP_LOSS_RULE_2")
                 return True
         except Exception:
             return False
@@ -617,11 +644,11 @@ class TradeSimulator:
     # ---------------------------------------------------------------
     def maybe_consecutive_drops_sell(self, ticker: str, current_price, drop_count_required: Optional[int] = None) -> bool:
         """Sell when price has dropped N consecutive times from the peak (Rule #3)."""
-        ticker = self._normalize_ticker(ticker)
-        if not ticker:
+        key = str(ticker or '').strip()
+        if not key:
             return False
-        self._ensure_ticker(ticker)
-        state = self.tickers[ticker]
+        self._ensure_ticker(key)
+        state = self.tickers[key]
         pos = state.get('position')
         if not pos:
             return False
@@ -662,7 +689,7 @@ class TradeSimulator:
 
         try:
             if int(state.get('drop_count') or 0) >= n_required:
-                self._sell(ticker, cp, win_reason="CONSECUTIVE_DROPS_RULE_3")
+                self._sell(key, cp, win_reason="CONSECUTIVE_DROPS_RULE_3")
                 return True
         except Exception:
             return False
@@ -672,11 +699,11 @@ class TradeSimulator:
     # RULE #5 - 3-MIN DOWNTREND → REVERSAL + SCALP
     # ---------------------------------------------------------------
     def maybe_rule5_trade(self, ticker: str, trend: str, current_price: float, down_minutes: Optional[int] = None, reversal_amount: Optional[float] = None, scalp_amount: Optional[float] = None) -> bool:
-        ticker = self._normalize_ticker(ticker)
-        if not ticker:
+        key = str(ticker or '').strip()
+        if not key:
             return False
-        self._ensure_ticker(ticker)
-        state = self.tickers[ticker]
+        self._ensure_ticker(key)
+        state = self.tickers[key]
 
         # normalize params
         try:
@@ -708,7 +735,7 @@ class TradeSimulator:
             except Exception:
                 rp = None
             if rp is not None and current_price >= (rp + rev_amt):
-                self._sell(ticker, current_price, win_reason="RULE_5")
+                self._sell(key, current_price, win_reason="RULE_5")
                 state['rule5_reversal_active'] = False
                 state['rule5_reversal_price'] = None
                 state['rule5_scalp_active'] = True
@@ -725,8 +752,8 @@ class TradeSimulator:
                 if state.get('position') is None:
                     buy_price = current_price - scalp_amt
                     sell_price = current_price + scalp_amt
-                    self._buy(ticker, buy_price)
-                    self._sell(ticker, sell_price, win_reason="RULE_5")
+                    self._buy(key, buy_price)
+                    self._sell(key, sell_price, win_reason="RULE_5")
                     return True
                 return True
 
@@ -752,7 +779,7 @@ class TradeSimulator:
             state['rule5_reversal_price'] = float(current_price)
             state['rule5_reversal_active'] = True
             if state.get('position') is None:
-                self._buy(ticker, current_price)
+                self._buy(key, current_price)
             return True
 
         return False
@@ -760,24 +787,25 @@ class TradeSimulator:
     # ---------------------------------------------------------------
     # RULE #1 MODE - BUY AS USUAL, SELL ONLY ON TAKE PROFIT
     # ---------------------------------------------------------------
-    def on_signal_take_profit_mode(self, trend: str, price_str: Optional[str], ticker: str, take_profit_amount, auto: bool = True, rule_2_enabled: bool = False, stop_loss_amount: Optional[float] = None, rule_3_enabled: bool = False, rule_3_drop_count: Optional[int] = None, rule_4_enabled: bool = True, rule_5_enabled: bool = False, rule_5_down_minutes: Optional[int] = None, rule_5_reversal_amount: Optional[float] = None, rule_5_scalp_amount: Optional[float] = None, rule_6_enabled: bool = False, rule_6_down_minutes: Optional[int] = None, rule_6_profit_amount: Optional[float] = None, rule_7_enabled: bool = False, rule_7_up_minutes: Optional[int] = None, rule_8_enabled: bool = False, rule_8_buy_offset: Optional[float] = None, rule_8_sell_offset: Optional[float] = None, rule_9_enabled: bool = False, rule_9_amount: Optional[float] = None, rule_9_flips: Optional[int] = None, rule_9_window_minutes: Optional[int] = None) -> Dict:
+    def on_signal_take_profit_mode(self, trend: str, price_str: Optional[str], ticker: str, take_profit_amount, auto: bool = True, rule_2_enabled: bool = False, stop_loss_amount: Optional[float] = None, rule_3_enabled: bool = False, rule_3_drop_count: Optional[int] = None, rule_4_enabled: bool = True, rule_5_enabled: bool = False, rule_5_down_minutes: Optional[int] = None, rule_5_reversal_amount: Optional[float] = None, rule_5_scalp_amount: Optional[float] = None, rule_6_enabled: bool = False, rule_6_down_minutes: Optional[int] = None, rule_6_profit_amount: Optional[float] = None, rule_7_enabled: bool = False, rule_7_up_minutes: Optional[int] = None, rule_8_enabled: bool = False, rule_8_buy_offset: Optional[float] = None, rule_8_sell_offset: Optional[float] = None, rule_9_enabled: bool = False, rule_9_amount: Optional[float] = None, rule_9_flips: Optional[int] = None, rule_9_window_minutes: Optional[int] = None, bot_id: Optional[str] = None, bot_name: Optional[str] = None) -> Dict:
         """In Rule #1 mode, buys may still be opened, but sells only occur via take-profit.
 
         This keeps the system able to enter positions, while overriding all other sell logic.
         """
         ticker = self._normalize_ticker(ticker)
         price = self._parse_price(price_str)
-        if price is None or not ticker:
+        state_key = self._state_key(bot_id, ticker)
+        if price is None or not state_key:
             return self.summary()
 
         trend = (trend or '').lower()
-        self._ensure_ticker(ticker)
-        state = self.tickers[ticker]
+        self._ensure_ticker(state_key, ticker=ticker, bot_id=bot_id, bot_name=bot_name)
+        state = self.tickers[state_key]
 
         # First, attempt Rule #2 stop-loss sell if enabled.
         if rule_2_enabled:
             try:
-                if self.maybe_stop_loss_sell(ticker, price, stop_loss_amount):
+                if self.maybe_stop_loss_sell(state_key, price, stop_loss_amount):
                     return self.summary()
             except Exception:
                 pass
@@ -785,14 +813,14 @@ class TradeSimulator:
         # Then, attempt Rule #3 consecutive drops if enabled.
         if rule_3_enabled:
             try:
-                if self.maybe_consecutive_drops_sell(ticker, price, rule_3_drop_count):
+                if self.maybe_consecutive_drops_sell(state_key, price, rule_3_drop_count):
                     return self.summary()
             except Exception:
                 pass
 
         # Then, attempt take-profit sell if we already have a position.
         try:
-            self.maybe_take_profit_sell(ticker, price, take_profit_amount)
+            self.maybe_take_profit_sell(state_key, price, take_profit_amount)
         except Exception:
             pass
 
@@ -810,7 +838,7 @@ class TradeSimulator:
         # No open position: allow normal buy behavior, but never sell.
         if not state.get('first_cycle_done'):
             if trend == 'down' and state.get('position') is None:
-                self._buy(ticker, price)
+                self._buy(state_key, price)
                 state['waiting_for_second_down'] = True
                 return self.summary()
 
@@ -827,12 +855,12 @@ class TradeSimulator:
             # If first trend is UP → start normal mode and buy
             if trend == 'up' and state.get('position') is None:
                 state['first_cycle_done'] = True
-                self._buy(ticker, price)
+                self._buy(state_key, price)
                 return self.summary()
 
         # Normal mode buy rules (sell rules intentionally disabled)
         if trend == 'up' and state.get('position') is None:
-            self._buy(ticker, price)
+            self._buy(state_key, price)
 
         return self.summary()
 
@@ -841,16 +869,23 @@ class TradeSimulator:
     # ---------------------------------------------------------------
     def summary(self) -> Dict:
         summary_dict = {}
+        bots_dict = {}
 
-        for ticker, state in self.tickers.items():
+        for key, state in self.tickers.items():
             closed_profits = [t["profit"] for t in state["trade_history"] if t["profit"] is not None]
             total_pnl = sum(closed_profits) if closed_profits else 0
             wins = sum(1 for p in closed_profits if p > 0)
             losses = sum(1 for p in closed_profits if p <= 0)
             win_rate = (wins / len(closed_profits) * 100) if closed_profits else 0
             last_trade = state["trade_history"][-1] if state["trade_history"] else None
+            bot_id = state.get("bot_id") or key
+            bot_name = state.get("bot_name")
+            ticker = state.get("ticker") or key
 
-            summary_dict[ticker] = {
+            bot_summary = {
+                "bot_id": bot_id,
+                "bot_name": bot_name,
+                "ticker": ticker,
                 "position": "long" if state["position"] else "flat",
                 "entry_price": state["position"]["entry"] if state["position"] else None,
                 "first_cycle_done": state["first_cycle_done"],
@@ -863,8 +898,37 @@ class TradeSimulator:
                 "trade_history": state["trade_history"].copy()
             }
 
+            bots_dict[bot_id] = bot_summary
+            if not state.get("bot_id"):
+                summary_dict[ticker] = bot_summary
+
         return {
             "tickers": summary_dict,
-            "total_pnl_all_tickers": sum(t["total_pnl"] for t in summary_dict.values()),
+            "bots": bots_dict,
+            "total_pnl_all_tickers": sum(t["total_pnl"] for t in bots_dict.values()),
             "all_trades": self.trade_history.copy()
         }
+
+    # ---------------------------------------------------------------
+    # RESET / CLEAR
+    # ---------------------------------------------------------------
+    def clear_bot(self, bot_id: Optional[str], ticker: Optional[str] = None):
+        key = self._state_key(bot_id, ticker or '')
+        if not key:
+            return
+        try:
+            if key in self.tickers:
+                del self.tickers[key]
+        except Exception:
+            pass
+        try:
+            self.trade_history = [t for t in self.trade_history if t.get("bot_id") != bot_id]
+        except Exception:
+            pass
+
+    def clear_all(self):
+        try:
+            self.tickers = {}
+            self.trade_history = []
+        except Exception:
+            pass

@@ -34,7 +34,7 @@ def save_observation(obs: dict):
         conn = sqlite3.connect(DB_PATH)
         cur = conn.cursor()
         cur.execute(
-            "INSERT INTO records (ts, image_path, name, ticker, price, trend, buy_price, sell_price, buy_time, sell_time, win_reason, meta) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO records (ts, image_path, name, ticker, price, trend, buy_price, sell_price, buy_time, sell_time, win_reason, bot_id, bot_name, meta) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 obs.get("ts"),
                 obs.get("image_path"),
@@ -47,6 +47,8 @@ def save_observation(obs: dict):
                 obs.get("buy_time"),
                 obs.get("sell_time"),
                 obs.get("win_reason"),
+                obs.get("bot_id"),
+                obs.get("bot_name"),
                 json.dumps(obs.get("meta", {})) if obs.get("meta") is not None else None,
             ),
         )

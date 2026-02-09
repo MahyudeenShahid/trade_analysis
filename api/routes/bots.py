@@ -1,47 +1,34 @@
-"""Bot management and persistence routes."""
-
-import json
-import os
-import shutil
-import sqlite3
+"""Session-scoped bot management routes (in-memory only)."""
 
 from fastapi import APIRouter, Depends, HTTPException
 from api.dependencies import require_api_key
-from db.queries import query_records, get_bot_db_entry, upsert_bot_settings
-from db.connection import DB_LOCK, DB_PATH
-from services.capture_manager import manager_services
+from services.bot_registry import (
+    register_bot,
+    update_bot,
+    remove_bot,
+    list_bots,
+    get_bot,
+    clear_all,
+)
+from trading.simulator import clear_bot_state, clear_all_state
 
 router = APIRouter(prefix="", tags=["bots"])
 
 
 @router.get("/bots")
 def api_bots(_auth: bool = Depends(require_api_key)):
-    """
-    Return all stored bot rows from the database.
-    
-    Returns:
-        list: Bot records with parsed meta JSON
-    """
+    """Return all session bots (in-memory)."""
     try:
-        rows = query_records("SELECT * FROM bots ORDER BY hwnd")
-        for r in rows:
-            try:
-                if r.get('meta'):
-                    r['meta'] = json.loads(r['meta'])
-                else:
-                    r['meta'] = {}
-            except Exception:
-                r['meta'] = {}
-        return rows
+        return list_bots()
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.get("/bots/{hwnd}")
-def api_bot(hwnd: int, _auth: bool = Depends(require_api_key)):
-    """Get a single bot row by hwnd."""
+@router.get("/bots/{bot_id}")
+def api_bot(bot_id: str, _auth: bool = Depends(require_api_key)):
+    """Get a single bot by bot_id (session-only)."""
     try:
-        row = get_bot_db_entry(int(hwnd))
+        row = get_bot(bot_id)
         if not row:
             raise HTTPException(status_code=404, detail="bot not found")
         return row
@@ -53,63 +40,56 @@ def api_bot(hwnd: int, _auth: bool = Depends(require_api_key)):
 
 @router.post("/bots/upsert")
 def api_bot_upsert(payload: dict, _auth: bool = Depends(require_api_key)):
-    """Create/update a bot row, including Rule #1/#2 settings."""
+    """Create/update a session bot (no DB persistence)."""
     try:
         if not isinstance(payload, dict):
             raise HTTPException(status_code=400, detail="payload must be an object")
-        hwnd = payload.get('hwnd')
-        if hwnd is None:
-            raise HTTPException(status_code=400, detail="hwnd is required")
-        upsert_bot_settings(int(hwnd), payload)
-        row = get_bot_db_entry(int(hwnd))
+        bot_id = payload.get('bot_id') or payload.get('id')
+        if not bot_id:
+            raise HTTPException(status_code=400, detail="bot_id is required")
+
+        existing = get_bot(bot_id)
+        if existing:
+            row = update_bot(bot_id, payload)
+        else:
+            row = register_bot(payload)
+        if not row:
+            raise HTTPException(status_code=400, detail="failed to register bot")
         return {"ok": True, "bot": row}
-    except ValueError as ve:
-        raise HTTPException(status_code=400, detail=str(ve))
     except HTTPException:
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.delete("/bots/{hwnd}")
-def api_delete_bot(hwnd: int, _auth: bool = Depends(require_api_key)):
-    """
-    Delete a bot row from DB and remove its screenshots folder.
-    
-    Stops the worker if it is currently running, removes the DB row in
-    `bots` and deletes the `screenshots/hwnd_<hwnd>` folder (best-effort).
-    
-    Args:
-        hwnd: Window handle to delete
-        
-    Returns:
-        dict: Deletion status
-    """
+@router.delete("/bots/{bot_id}")
+def api_delete_bot(bot_id: str, _auth: bool = Depends(require_api_key)):
+    """Remove a session bot by bot_id (no DB side-effects)."""
     try:
-        # Stop worker if running
+        removed = remove_bot(bot_id)
+        if not removed:
+            raise HTTPException(status_code=404, detail="bot not found")
         try:
-            manager_services.stop_worker(int(hwnd))
+            clear_bot_state(bot_id)
         except Exception:
             pass
+        return {"deleted": True, "bot_id": bot_id}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
-        with DB_LOCK:
-            conn = sqlite3.connect(DB_PATH)
-            cur = conn.cursor()
-            cur.execute("DELETE FROM bots WHERE hwnd = ?", (int(hwnd),))
-            conn.commit()
-            conn.close()
 
-        # Best-effort remove screenshots folder for this hwnd
+@router.post("/bots/clear")
+def api_clear_bots(_auth: bool = Depends(require_api_key)):
+    """Clear all session bots."""
+    try:
+        clear_all()
         try:
-            # typical worker folder: screenshots/hwnd_<hwnd>
-            base = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'screenshots')
-            target = os.path.join(base, f'hwnd_{int(hwnd)}')
-            if os.path.exists(target) and os.path.isdir(target):
-                shutil.rmtree(target)
+            clear_all_state()
         except Exception:
             pass
-
-        return {"deleted": True, "hwnd": int(hwnd)}
+        return {"cleared": True}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

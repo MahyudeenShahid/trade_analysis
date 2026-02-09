@@ -1,15 +1,13 @@
 """Screen capture and worker management routes (multi-worker only)."""
 
-import json
 import os
-import sqlite3
 from typing import Optional
 
 from fastapi import APIRouter, HTTPException, Depends
 from api.dependencies import require_api_key
 from services.capture_manager import manager_services
 from services.background_service import selector
-from db.connection import DB_LOCK, DB_PATH
+from services.bot_registry import list_bots_by_hwnd, set_crop
 
 router = APIRouter(prefix="", tags=["capture"])
 
@@ -38,6 +36,9 @@ def api_start_multi(
         raise HTTPException(status_code=400, detail="hwnd is required")
     if not selector.is_window_valid(hwnd):
         raise HTTPException(status_code=400, detail="Window handle invalid")
+
+    if manager_services.get_worker(int(hwnd)):
+        return {"started": True, "hwnd": int(hwnd), "already_running": True}
 
     started = manager_services.start_worker(
         int(hwnd),
@@ -106,7 +107,6 @@ def api_workers(_auth: bool = Depends(require_api_key)):
         list: Worker status information
     """
     import base64
-    from db.queries import get_bot_db_entry
     
     out = []
     try:
@@ -120,18 +120,22 @@ def api_workers(_auth: bool = Depends(require_api_key)):
                         img_b64 = base64.b64encode(f.read()).decode('ascii')
                 except Exception:
                     img_b64 = None
-            # also attach any DB-stored bot info for this hwnd
+            # attach any session bots for this hwnd
             bot_info = None
+            bot_list = []
             try:
-                bot_info = get_bot_db_entry(int(w.get('hwnd')))
+                bot_list = list_bots_by_hwnd(int(w.get('hwnd')))
+                bot_info = bot_list[0] if bot_list else None
             except Exception:
                 bot_info = None
+                bot_list = []
             out.append({
                 'hwnd': int(w.get('hwnd')),
                 'status': w.get('status') or {},
                 'last_result': last,
                 'screenshot_b64': img_b64,
                 'bot': bot_info,
+                'bots': bot_list,
             })
     except Exception:
         pass
@@ -181,60 +185,29 @@ def api_set_worker_crop(
 
         svc = manager_services.get_worker(int(hwnd))
         if not svc:
-            # If the worker is not currently running, persist the crop
-            # values to the bots table so they can be applied when the
-            # worker starts. This helps the UI apply crops even when the
-            # capture worker is temporarily stopped.
             try:
-                with DB_LOCK:
-                    conn = sqlite3.connect(DB_PATH)
-                    cur = conn.cursor()
-                    # ensure a row exists for this hwnd
-                    cur.execute("SELECT hwnd, meta FROM bots WHERE hwnd = ?", (int(hwnd),))
-                    row = cur.fetchone()
-                    meta = {}
-                    if row and row[1]:
-                        try:
-                            meta = json.loads(row[1]) if isinstance(row[1], str) else row[1]
-                        except Exception:
-                            meta = {}
-                    # attach crop values under meta.crop
-                    if 'crop' not in meta or not isinstance(meta.get('crop'), dict):
-                        meta['crop'] = {}
-                    if lf is not None:
-                        meta['crop']['left'] = lf
-                    if rf is not None:
-                        meta['crop']['right'] = rf
-                    if tf is not None:
-                        meta['crop']['top'] = tf
-                    if bf is not None:
-                        meta['crop']['bottom'] = bf
-
-                    if row:
-                        cur.execute(
-                            "UPDATE bots SET meta = ? WHERE hwnd = ?",
-                            (json.dumps(meta), int(hwnd))
-                        )
-                    else:
-                        # insert with empty name/ticker and meta
-                        cur.execute(
-                            "INSERT INTO bots (hwnd, name, ticker, total_pnl, open_direction, open_price, open_time, meta) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                            (int(hwnd), None, None, None, None, None, None, json.dumps(meta))
-                        )
-                    conn.commit()
-                    conn.close()
+                crop = {}
+                if lf is not None:
+                    crop['left'] = lf
+                if rf is not None:
+                    crop['right'] = rf
+                if tf is not None:
+                    crop['top'] = tf
+                if bf is not None:
+                    crop['bottom'] = bf
+                set_crop(int(hwnd), crop)
                 return {
                     "hwnd": int(hwnd),
                     "left": lf,
                     "right": rf,
                     "top": tf,
                     "bottom": bf,
-                    "applied": "persisted"
+                    "applied": "cached"
                 }
             except Exception as e:
                 raise HTTPException(
                     status_code=500,
-                    detail=f"Failed to persist crop for inactive worker: {e}"
+                    detail=f"Failed to cache crop for inactive worker: {e}"
                 )
 
         # Apply values if present
