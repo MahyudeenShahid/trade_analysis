@@ -87,11 +87,11 @@ class BackgroundCaptureService:
             return True
         return False
 
-    def handle_trade_event(self, direction: str, ticker: str, trade_ts: str = None):
+    def handle_trade_event(self, direction: str, ticker: str, trade_ts: str = None, price: float = None):
         """Notify trade recorder about buy/sell events."""
         try:
             if direction == 'buy':
-                self.trade_recorder.start_trade(ticker, trade_ts)
+                self.trade_recorder.start_trade(ticker, trade_ts, price)
             elif direction == 'sell':
                 self.trade_recorder.end_trade()
         except Exception:
@@ -277,7 +277,7 @@ class BackgroundCaptureService:
                         pass
                     self.successful_captures += 1
                     try:
-                        self.trade_recorder.register_capture(img_path)
+                        self.trade_recorder.register_capture(img_path, price_value)
                     except Exception:
                         pass
                     trend = None
@@ -414,6 +414,10 @@ class TradeScreenshotRecorder:
         self.trade_dir = None
         self.current_day = None
         self.hwnd = None
+        self.current_ticker = None
+        self.buy_price = None
+        self.buy_time = None
+        self.screenshots_metadata = []
 
     def set_hwnd(self, hwnd: int):
         self.hwnd = hwnd
@@ -438,20 +442,33 @@ class TradeScreenshotRecorder:
         except Exception:
             pass
 
-    def register_capture(self, img_path: str):
+    def register_capture(self, img_path: str, current_price: float = None):
         self._ensure_day_dir()
+        capture_time = datetime.utcnow().isoformat()
         if img_path:
-            self.pre_buffer.append(img_path)
+            self.pre_buffer.append({'path': img_path, 'time': capture_time, 'price': current_price})
         if self.active_trade and self.trade_dir:
             # store all frames in a single trade folder (no pre/during/post subfolders)
             self._copy_to(self.trade_dir, img_path)
+            self.screenshots_metadata.append({
+                'path': img_path,
+                'time': capture_time,
+                'price': current_price,
+                'ticker': self.current_ticker
+            })
         elif self.after_remaining > 0 and self.trade_dir:
             self._copy_to(self.trade_dir, img_path)
+            self.screenshots_metadata.append({
+                'path': img_path,
+                'time': capture_time,
+                'price': current_price,
+                'ticker': self.current_ticker
+            })
             self.after_remaining -= 1
             if self.after_remaining <= 0:
                 self.trade_dir = None
 
-    def start_trade(self, ticker: str, trade_ts: str = None):
+    def start_trade(self, ticker: str, trade_ts: str = None, buy_price: float = None):
         day = self._ensure_day_dir()
         safe_ticker = (ticker or "UNKNOWN").replace(os.sep, "_")
         trade_id = (trade_ts or datetime.utcnow().isoformat()).replace(":", "-")
@@ -460,10 +477,21 @@ class TradeScreenshotRecorder:
             base = os.path.join(base, f"hwnd_{int(self.hwnd)}")
         trade_dir = os.path.join(base, safe_ticker, f"trade_{trade_id}")
         self.trade_dir = trade_dir
+        self.current_ticker = ticker
+        self.buy_price = buy_price
+        self.buy_time = trade_ts or datetime.utcnow().isoformat()
+        self.screenshots_metadata = []
+        print(f"[TradeRecorder] Starting trade for {ticker} at ${buy_price}, dir: {trade_dir}")
         # copy pre-buffer
-        for p in list(self.pre_buffer):
+        for item in list(self.pre_buffer):
             # keep pre-trade frames in the same folder to preserve sequence
-            self._copy_to(trade_dir, p)
+            if isinstance(item, dict):
+                self._copy_to(trade_dir, item.get('path'))
+                self.screenshots_metadata.append(item)
+            else:
+                # backward compatibility
+                self._copy_to(trade_dir, item)
+                self.screenshots_metadata.append({'path': item, 'time': None, 'price': None})
         self.active_trade = True
         self.after_remaining = 0
 
@@ -472,11 +500,41 @@ class TradeScreenshotRecorder:
         if self.trade_dir and self.pre_buffer:
             try:
                 last = list(self.pre_buffer)[-1]
-                self._copy_to(self.trade_dir, last)
+                if isinstance(last, dict):
+                    self._copy_to(self.trade_dir, last.get('path'))
+                    self.screenshots_metadata.append(last)
+                else:
+                    self._copy_to(self.trade_dir, last)
             except Exception:
                 pass
+        
+        # Save metadata to JSON file
+        if self.trade_dir and self.screenshots_metadata:
+            try:
+                import json
+                metadata_file = os.path.join(self.trade_dir, 'metadata.json')
+                metadata = {
+                    'ticker': self.current_ticker,
+                    'buy_price': self.buy_price,
+                    'buy_time': self.buy_time,
+                    'screenshots': self.screenshots_metadata
+                }
+                with open(metadata_file, 'w') as f:
+                    json.dump(metadata, f, indent=2)
+            except Exception as e:
+                print(f"Failed to save metadata: {e}")
+        
         self.active_trade = False
         self.after_remaining = max(1, self.post_count)
+
+    def get_metadata(self):
+        """Get all screenshot metadata for current trade."""
+        return {
+            'screenshots': self.screenshots_metadata,
+            'ticker': self.current_ticker,
+            'buy_price': self.buy_price,
+            'buy_time': self.buy_time
+        }
 
 
 if __name__ == "__main__":

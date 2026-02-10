@@ -79,7 +79,8 @@ def _safe_join(base_dir: str, rel_path: str) -> Optional[str]:
     return target
 
 
-def _collect_trade_screenshots(record: dict) -> List[str]:
+def _collect_trade_screenshots(record: dict) -> List[dict]:
+    """Collect trade screenshots with metadata (time, price)."""
     meta = _extract_meta(record)
     candidates = []
     trade_id = _extract_trade_id(record)
@@ -121,18 +122,74 @@ def _collect_trade_screenshots(record: dict) -> List[str]:
             break
 
     if not target_dir:
+        print(f"[_collect_trade_screenshots] No target directory found for candidates: {candidates}")
         return []
+    
+    print(f"[_collect_trade_screenshots] Found target directory: {target_dir}")
 
-    images = []
+    # Try to load metadata.json if it exists
+    metadata_file = os.path.join(target_dir, 'metadata.json')
+    saved_metadata = None
+    if os.path.exists(metadata_file):
+        try:
+            with open(metadata_file, 'r') as f:
+                saved_metadata = json.load(f)
+        except Exception:
+            pass
+    
+    # Get buy_price from record as fallback
+    buy_price = record.get('buy_price')
+    if buy_price is None:
+        buy_price = meta.get('buy_price') or meta.get('entry_price')
+    
+    # Use metadata buy_price if available
+    if saved_metadata and saved_metadata.get('buy_price'):
+        buy_price = saved_metadata.get('buy_price')
+
+    # Collect screenshots with metadata
+    screenshots = []
     for dirpath, _, filenames in os.walk(target_dir):
         for fname in sorted(filenames):
+            if fname == 'metadata.json':
+                continue
             ext = os.path.splitext(fname)[1].lower()
             if ext not in (".png", ".jpg", ".jpeg"):
                 continue
             full = os.path.join(dirpath, fname)
             rel = os.path.relpath(full, TRADE_SCREENSHOTS_DIR).replace(os.sep, "/")
-            images.append(f"/trade_screenshots/{rel}")
-    return images
+            
+            # Try to extract time from filename
+            time_str = None
+            screenshot_price = buy_price
+            try:
+                # Filename format: capture_YYYYMMDD_HHMMSS_mmm.jpg
+                if 'capture_' in fname:
+                    parts = fname.split('_')
+                    if len(parts) >= 3:
+                        date_part = parts[1]
+                        time_part = parts[2].split('.')[0]
+                        time_str = f"{date_part[:4]}-{date_part[4:6]}-{date_part[6:8]}T{time_part[:2]}:{time_part[2:4]}:{time_part[4:6]}"
+                
+                # Try to find this screenshot in saved metadata
+                if saved_metadata and saved_metadata.get('screenshots'):
+                    for sm in saved_metadata['screenshots']:
+                        if isinstance(sm, dict) and sm.get('path'):
+                            if os.path.basename(sm['path']) == fname:
+                                if sm.get('price') is not None:
+                                    screenshot_price = sm['price']
+                                if sm.get('time') and not time_str:
+                                    time_str = sm['time']
+                                break
+            except Exception:
+                pass
+            
+            screenshots.append({
+                'url': f"/trade_screenshots/{rel}",
+                'time': time_str,
+                'price': screenshot_price
+            })
+    
+    return screenshots
 
 
 @router.post("/ingest")
@@ -345,7 +402,11 @@ def api_history(
         try:
             r["trade_id"] = _extract_trade_id(r)
             r["screenshots"] = _collect_trade_screenshots(r)
-        except Exception:
+            # Debug logging
+            if r["screenshots"]:
+                print(f"[History API] Found {len(r['screenshots'])} screenshots for {r.get('ticker', 'unknown')}")
+        except Exception as e:
+            print(f"[History API] Error collecting screenshots: {e}")
             r["trade_id"] = _extract_trade_id(r)
             r["screenshots"] = []
     return rows

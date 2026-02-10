@@ -124,7 +124,7 @@ class TradeSimulator:
     # ---------------------------------------------------------------
     # SIGNAL HANDLER
     # ---------------------------------------------------------------
-    def on_signal(self, trend: str, price_str: Optional[str], ticker: str, auto: bool = True, rule_2_enabled: bool = False, stop_loss_amount: Optional[float] = None, rule_3_enabled: bool = False, rule_3_drop_count: Optional[int] = None, rule_4_enabled: bool = True, rule_5_enabled: bool = False, rule_5_down_minutes: Optional[int] = None, rule_5_reversal_amount: Optional[float] = None, rule_5_scalp_amount: Optional[float] = None, rule_6_enabled: bool = False, rule_6_down_minutes: Optional[int] = None, rule_6_profit_amount: Optional[float] = None, rule_7_enabled: bool = False, rule_7_up_minutes: Optional[int] = None, rule_8_enabled: bool = False, rule_8_buy_offset: Optional[float] = None, rule_8_sell_offset: Optional[float] = None, rule_9_enabled: bool = False, rule_9_amount: Optional[float] = None, rule_9_flips: Optional[int] = None, rule_9_window_minutes: Optional[int] = None, bot_id: Optional[str] = None, bot_name: Optional[str] = None) -> Dict:
+    def on_signal(self, trend: str, price_str: Optional[str], ticker: str, auto: bool = True, rule_1_enabled: bool = False, take_profit_amount: Optional[float] = None, rule_2_enabled: bool = False, stop_loss_amount: Optional[float] = None, rule_3_enabled: bool = False, rule_3_drop_count: Optional[int] = None, rule_4_enabled: bool = True, rule_5_enabled: bool = False, rule_5_down_minutes: Optional[int] = None, rule_5_reversal_amount: Optional[float] = None, rule_5_scalp_amount: Optional[float] = None, rule_6_enabled: bool = False, rule_6_down_minutes: Optional[int] = None, rule_6_profit_amount: Optional[float] = None, rule_7_enabled: bool = False, rule_7_up_minutes: Optional[int] = None, rule_8_enabled: bool = False, rule_8_buy_offset: Optional[float] = None, rule_8_sell_offset: Optional[float] = None, rule_9_enabled: bool = False, rule_9_amount: Optional[float] = None, rule_9_flips: Optional[int] = None, rule_9_window_minutes: Optional[int] = None, bot_id: Optional[str] = None, bot_name: Optional[str] = None) -> Dict:
         """Handle signal for a given ticker."""
         ticker = self._normalize_ticker(ticker)
         price = self._parse_price(price_str)
@@ -135,6 +135,14 @@ class TradeSimulator:
         trend = trend.lower()
         self._ensure_ticker(state_key, ticker=ticker, bot_id=bot_id, bot_name=bot_name)
         state = self.tickers[state_key]
+
+        # RULE #1: take-profit sell (works alongside default logic)
+        if rule_1_enabled:
+            try:
+                if self.maybe_take_profit_sell(state_key, price, take_profit_amount):
+                    return self.summary()
+            except Exception:
+                pass
 
         # RULE #2: stop loss at buy price - stop_loss_amount
         if rule_2_enabled:

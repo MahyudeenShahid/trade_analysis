@@ -5,6 +5,8 @@ From a PowerShell prompt in the project root:
 
 
 ```powershell
+cd trade_analysis
+
 git pull https://github.com/MahyudeenShahid/trade_analysis.git
 
 python -m venv .venv
