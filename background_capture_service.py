@@ -5,18 +5,15 @@ This module provides a service that continuously captures screenshots
 of a selected window at specified intervals in the background.
 """
 
+import csv
 import threading
 import time
+import os
 from datetime import datetime
-from collections import deque
-import shutil
 from screenshot_capture import ScreenshotCapture
 from window_selector import WindowSelector
 from title_extractor import extract_from_title
-import csv
-import os
-from concurrent.futures import ThreadPoolExecutor, TimeoutError
-import numpy as np
+from services.trade_recorder import TradeScreenshotRecorder
 
 
 class BackgroundCaptureService:
@@ -403,139 +400,44 @@ class BackgroundCaptureService:
             print("Background capture service resumed.")
 
 
-class TradeScreenshotRecorder:
-    def __init__(self, base_dir: str, pre_count: int = 5, post_count: int = 5):
-        self.base_dir = base_dir
-        self.pre_count = max(1, int(pre_count))
-        self.post_count = max(1, int(post_count))
-        self.pre_buffer = deque(maxlen=self.pre_count)
-        self.active_trade = False
-        self.after_remaining = 0
-        self.trade_dir = None
-        self.current_day = None
-        self.hwnd = None
-        self.current_ticker = None
-        self.buy_price = None
-        self.buy_time = None
-        self.screenshots_metadata = []
-
-    def set_hwnd(self, hwnd: int):
-        self.hwnd = hwnd
-
-    def _ensure_day_dir(self):
-        day = datetime.utcnow().strftime("%Y%m%d")
-        if self.current_day != day:
-            try:
-                if os.path.exists(self.base_dir):
-                    shutil.rmtree(self.base_dir)
-            except Exception:
-                pass
-            os.makedirs(self.base_dir, exist_ok=True)
-            self.current_day = day
-        return day
-
-    def _copy_to(self, folder: str, src: str):
+if __name__ == "__main__":
+    # Test the background service
+    from window_selector import WindowSelector
+    
+    selector = WindowSelector()
+    windows = selector.get_browser_windows()
+    
+    if not windows:
+        windows = selector.enumerate_windows()[:10]
+    
+    if windows:
+        print("Available windows:")
+        for i, (hwnd, title, process) in enumerate(windows):
+            print(f"{i+1}. [{process}] {title}")
+        
+        choice = input("\nEnter window number to capture: ")
         try:
-            os.makedirs(folder, exist_ok=True)
-            if src and os.path.exists(src):
-                shutil.copy2(src, os.path.join(folder, os.path.basename(src)))
-        except Exception:
-            pass
-
-    def register_capture(self, img_path: str, current_price: float = None):
-        self._ensure_day_dir()
-        capture_time = datetime.utcnow().isoformat()
-        if img_path:
-            self.pre_buffer.append({'path': img_path, 'time': capture_time, 'price': current_price})
-        if self.active_trade and self.trade_dir:
-            # store all frames in a single trade folder (no pre/during/post subfolders)
-            self._copy_to(self.trade_dir, img_path)
-            self.screenshots_metadata.append({
-                'path': img_path,
-                'time': capture_time,
-                'price': current_price,
-                'ticker': self.current_ticker
-            })
-        elif self.after_remaining > 0 and self.trade_dir:
-            self._copy_to(self.trade_dir, img_path)
-            self.screenshots_metadata.append({
-                'path': img_path,
-                'time': capture_time,
-                'price': current_price,
-                'ticker': self.current_ticker
-            })
-            self.after_remaining -= 1
-            if self.after_remaining <= 0:
-                self.trade_dir = None
-
-    def start_trade(self, ticker: str, trade_ts: str = None, buy_price: float = None):
-        day = self._ensure_day_dir()
-        safe_ticker = (ticker or "UNKNOWN").replace(os.sep, "_")
-        trade_id = (trade_ts or datetime.utcnow().isoformat()).replace(":", "-")
-        base = os.path.join(self.base_dir, day)
-        if self.hwnd is not None:
-            base = os.path.join(base, f"hwnd_{int(self.hwnd)}")
-        trade_dir = os.path.join(base, safe_ticker, f"trade_{trade_id}")
-        self.trade_dir = trade_dir
-        self.current_ticker = ticker
-        self.buy_price = buy_price
-        self.buy_time = trade_ts or datetime.utcnow().isoformat()
-        self.screenshots_metadata = []
-        print(f"[TradeRecorder] Starting trade for {ticker} at ${buy_price}, dir: {trade_dir}")
-        # copy pre-buffer
-        for item in list(self.pre_buffer):
-            # keep pre-trade frames in the same folder to preserve sequence
-            if isinstance(item, dict):
-                self._copy_to(trade_dir, item.get('path'))
-                self.screenshots_metadata.append(item)
-            else:
-                # backward compatibility
-                self._copy_to(trade_dir, item)
-                self.screenshots_metadata.append({'path': item, 'time': None, 'price': None})
-        self.active_trade = True
-        self.after_remaining = 0
-
-    def end_trade(self):
-        # ensure at least one closing frame is kept
-        if self.trade_dir and self.pre_buffer:
-            try:
-                last = list(self.pre_buffer)[-1]
-                if isinstance(last, dict):
-                    self._copy_to(self.trade_dir, last.get('path'))
-                    self.screenshots_metadata.append(last)
-                else:
-                    self._copy_to(self.trade_dir, last)
-            except Exception:
-                pass
-        
-        # Save metadata to JSON file
-        if self.trade_dir and self.screenshots_metadata:
-            try:
-                import json
-                metadata_file = os.path.join(self.trade_dir, 'metadata.json')
-                metadata = {
-                    'ticker': self.current_ticker,
-                    'buy_price': self.buy_price,
-                    'buy_time': self.buy_time,
-                    'screenshots': self.screenshots_metadata
-                }
-                with open(metadata_file, 'w') as f:
-                    json.dump(metadata, f, indent=2)
-            except Exception as e:
-                print(f"Failed to save metadata: {e}")
-        
-        self.active_trade = False
-        self.after_remaining = max(1, self.post_count)
-
-    def get_metadata(self):
-        """Get all screenshot metadata for current trade."""
-        return {
-            'screenshots': self.screenshots_metadata,
-            'ticker': self.current_ticker,
-            'buy_price': self.buy_price,
-            'buy_time': self.buy_time
-        }
-
+            idx = int(choice) - 1
+            if 0 <= idx < len(windows):
+                hwnd, title, process = windows[idx]
+                print(f"\nSelected: {title}")
+                
+                service = BackgroundCaptureService()
+                service.set_target_window(hwnd)
+                service.set_interval(2)  # 2 seconds
+                service.start()
+                
+                print("\nService running. Press Ctrl+C to stop...")
+                try:
+                    while True:
+                        time.sleep(5)
+                        status = service.get_status()
+                        print(f"Captures: {status['successful_captures']}/{status['total_captures']}")
+                except KeyboardInterrupt:
+                    print("\nStopping service...")
+                    service.stop()
+        except ValueError:
+            print("Invalid input.")
 
 if __name__ == "__main__":
     # Test the background service

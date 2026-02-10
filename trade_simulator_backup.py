@@ -1,0 +1,951 @@
+"""
+Improved Per-Ticker Trade Simulator for Demo/Testing
+
+Enhancements:
+- Handles multiple tickers independently
+- First-cycle special rule for first DOWN signal
+- Normal trading logic after first cycle per ticker
+- Full trade logging per ticker
+- PnL statistics, win/loss counts, win rate
+- Optional callback on each trade
+- Manual toggle per ticker
+- Robust price parsing with $, commas, spaces
+"""
+
+from typing import Optional, List, Dict, Callable
+from datetime import datetime
+
+
+class TradeSimulator:
+    def __init__(self, on_trade: Optional[Callable[[Dict], None]] = None):
+        # Each ticker has its own state
+        self.tickers: Dict[str, Dict] = {}
+        # Full global trade history (all tickers)
+        self.trade_history: List[Dict] = []
+        # Optional callback
+        self.on_trade = on_trade
+
+    # ---------------------------------------------------------------
+    # PRICE PARSER
+    # ---------------------------------------------------------------
+    def _parse_price(self, price_str: Optional[str]) -> Optional[float]:
+        """Convert price string to float, handling $, commas, and spaces."""
+        if not price_str:
+            return None
+        try:
+            clean = str(price_str).strip().replace("$", "").replace(",", "").replace(" ", "")
+            return float(clean)
+        except ValueError:
+            return None
+
+    # ---------------------------------------------------------------
+    # ENSURE TICKER STATE
+    # ---------------------------------------------------------------
+    def _normalize_ticker(self, ticker: str) -> str:
+        try:
+            return str(ticker or '').strip().upper()
+        except Exception:
+            return ''
+
+    def _normalize_bot_id(self, bot_id: Optional[str]) -> str:
+        try:
+            return str(bot_id or '').strip()
+        except Exception:
+            return ''
+
+    def _state_key(self, bot_id: Optional[str], ticker: str) -> str:
+        bid = self._normalize_bot_id(bot_id)
+        if bid:
+            return bid
+        return self._normalize_ticker(ticker)
+
+    def _ensure_ticker(self, key: str, ticker: Optional[str] = None, bot_id: Optional[str] = None, bot_name: Optional[str] = None):
+        key = str(key or '').strip()
+        if not key:
+            return
+        if key not in self.tickers:
+            self.tickers[key] = {
+                "position": None,                 # current open trade
+                "first_cycle_done": False,        # special first-cycle completed
+                "waiting_for_second_down": False, # first-cycle flag
+                "trade_history": [],              # ticker-specific trades
+                "ticker": self._normalize_ticker(ticker) if ticker else None,
+                "bot_id": self._normalize_bot_id(bot_id) if bot_id else None,
+                "bot_name": bot_name,
+                "last_direction": None,
+                "last_price": None,
+                "peak_price": None,
+                "drop_count": 0,
+                # Rule #5 state
+                "rule5_down_start": None,
+                "rule5_ready_for_reversal": False,
+                "rule5_reversal_price": None,
+                "rule5_reversal_active": False,
+                "rule5_scalp_active": False,
+                "rule5_last_trend": None,
+                # Rule #6 state
+                "rule6_down_start": None,
+                "rule6_ready_for_buy": False,
+                "rule6_active": False,
+                # Rule #7 state
+                "rule7_up_start": None,
+                "rule7_ready_for_buy": False,
+                "rule7_active": False,
+                # Rule #8 state
+                "rule8_active": False,
+                # Rule #9 state
+                "rule9_window_start": None,
+                "rule9_flip_count": 0,
+                "rule9_last_trend": None,
+            }
+        else:
+            if ticker and not self.tickers[key].get("ticker"):
+                self.tickers[key]["ticker"] = self._normalize_ticker(ticker)
+            if bot_id and not self.tickers[key].get("bot_id"):
+                self.tickers[key]["bot_id"] = self._normalize_bot_id(bot_id)
+            if bot_name and not self.tickers[key].get("bot_name"):
+                self.tickers[key]["bot_name"] = bot_name
+
+    # ---------------------------------------------------------------
+    # RULE #4 - TRADING HOURS
+    # ---------------------------------------------------------------
+    def _is_trading_hours(self) -> bool:
+        """Return True if local time is Mon-Fri 9:30am–4:00pm."""
+        try:
+            now = datetime.now()
+            # Monday=0 ... Sunday=6
+            if now.weekday() > 4:
+                return False
+            total_minutes = now.hour * 60 + now.minute
+            return (total_minutes >= (9 * 60 + 30)) and (total_minutes <= (16 * 60))
+        except Exception:
+            return True
+
+    # ---------------------------------------------------------------
+    # SIGNAL HANDLER
+    # ---------------------------------------------------------------
+    def on_signal(self, trend: str, price_str: Optional[str], ticker: str, auto: bool = True, rule_1_enabled: bool = False, take_profit_amount: Optional[float] = None, rule_2_enabled: bool = False, stop_loss_amount: Optional[float] = None, rule_3_enabled: bool = False, rule_3_drop_count: Optional[int] = None, rule_4_enabled: bool = True, rule_5_enabled: bool = False, rule_5_down_minutes: Optional[int] = None, rule_5_reversal_amount: Optional[float] = None, rule_5_scalp_amount: Optional[float] = None, rule_6_enabled: bool = False, rule_6_down_minutes: Optional[int] = None, rule_6_profit_amount: Optional[float] = None, rule_7_enabled: bool = False, rule_7_up_minutes: Optional[int] = None, rule_8_enabled: bool = False, rule_8_buy_offset: Optional[float] = None, rule_8_sell_offset: Optional[float] = None, rule_9_enabled: bool = False, rule_9_amount: Optional[float] = None, rule_9_flips: Optional[int] = None, rule_9_window_minutes: Optional[int] = None, bot_id: Optional[str] = None, bot_name: Optional[str] = None) -> Dict:
+        """Handle signal for a given ticker."""
+        ticker = self._normalize_ticker(ticker)
+        price = self._parse_price(price_str)
+        state_key = self._state_key(bot_id, ticker)
+        if price is None or not state_key:
+            return self.summary()
+
+        trend = trend.lower()
+        self._ensure_ticker(state_key, ticker=ticker, bot_id=bot_id, bot_name=bot_name)
+        state = self.tickers[state_key]
+
+        # RULE #1: take-profit sell (works alongside default logic)
+        if rule_1_enabled:
+            try:
+                if self.maybe_take_profit_sell(state_key, price, take_profit_amount):
+                    return self.summary()
+            except Exception:
+                pass
+
+        # RULE #2: stop loss at buy price - stop_loss_amount
+        if rule_2_enabled:
+            try:
+                if self.maybe_stop_loss_sell(state_key, price, stop_loss_amount):
+                    return self.summary()
+            except Exception:
+                pass
+
+        # RULE #3: consecutive drops from peak
+        if rule_3_enabled:
+            try:
+                if self.maybe_consecutive_drops_sell(state_key, price, rule_3_drop_count):
+                    return self.summary()
+            except Exception:
+                pass
+
+        if auto:
+            # RULE #4: trade only during market hours (Mon–Fri 9:30–16:00)
+            if rule_4_enabled and not self._is_trading_hours():
+                return self.summary()
+
+            # RULE #5: 3-minute downtrend → reversal + scalp
+            if rule_5_enabled:
+                try:
+                    if self.maybe_rule5_trade(state_key, trend, price, rule_5_down_minutes, rule_5_reversal_amount, rule_5_scalp_amount):
+                        return self.summary()
+                except Exception:
+                    pass
+            # RULE #6: long wait → buy on reversal and sell at profit target
+            if rule_6_enabled:
+                try:
+                    if self.maybe_rule6_trade(state_key, trend, price, rule_6_down_minutes, rule_6_profit_amount):
+                        return self.summary()
+                except Exception:
+                    pass
+            # RULE #7: strong momentum buy after uptrend duration
+            if rule_7_enabled:
+                try:
+                    if self.maybe_rule7_trade(state_key, trend, price, rule_7_up_minutes):
+                        return self.summary()
+                except Exception:
+                    pass
+            # RULE #8: always buy/sell using offsets from current price
+            if rule_8_enabled:
+                try:
+                    if self.maybe_rule8_trade(state_key, price, rule_8_buy_offset, rule_8_sell_offset):
+                        return self.summary()
+                except Exception:
+                    pass
+            # RULE #9: N up/down flips within M minutes → quick scalp
+            if rule_9_enabled:
+                try:
+                    if self.maybe_rule9_trade(state_key, trend, price, rule_9_amount, rule_9_flips, rule_9_window_minutes):
+                        return self.summary()
+                except Exception:
+                    pass
+            # --------------------------
+            # FIRST CYCLE LOGIC (first DOWN special)
+            # --------------------------
+            if not state["first_cycle_done"]:
+                if trend == "down" and state["position"] is None:
+                    self._buy(state_key, price)
+                    state["waiting_for_second_down"] = True
+                    return self.summary()
+
+                if trend == "up" and state["waiting_for_second_down"]:
+                    # ignore UP after first buy
+                    return self.summary()
+
+                if trend == "down" and state["waiting_for_second_down"]:
+                    self._sell(state_key, price)
+                    state["first_cycle_done"] = True
+                    state["waiting_for_second_down"] = False
+                    return self.summary()
+
+                # If first trend is UP → start normal mode
+                if trend == "up" and state["position"] is None:
+                    state["first_cycle_done"] = True
+                    self._buy(state_key, price)
+                    return self.summary()
+
+            # --------------------------
+            # NORMAL MODE
+            # --------------------------
+            if trend == "up" and state["position"] is None:
+                self._buy(state_key, price)
+
+            elif trend == "down" and state["position"] is not None:
+                win_reason = "RULE_7" if state.get("rule7_active") else None
+                self._sell(state_key, price, win_reason=win_reason)
+                state["rule7_active"] = False
+
+        return self.summary()
+
+    # ---------------------------------------------------------------
+    # MANUAL TOGGLE (per ticker)
+    # ---------------------------------------------------------------
+    def manual_toggle(self, price_str: Optional[str], ticker: str, bot_id: Optional[str] = None, bot_name: Optional[str] = None) -> Dict:
+        ticker = self._normalize_ticker(ticker)
+        price = self._parse_price(price_str)
+        state_key = self._state_key(bot_id, ticker)
+        if price is None or not state_key:
+            return self.summary()
+
+        self._ensure_ticker(state_key, ticker=ticker, bot_id=bot_id, bot_name=bot_name)
+        state = self.tickers[state_key]
+
+        if state["position"] is None:
+            self._buy(state_key, price)
+        else:
+            self._sell(state_key, price)
+
+        return self.summary()
+
+    # ---------------------------------------------------------------
+    # BUY / SELL
+    # ---------------------------------------------------------------
+    def _buy(self, key: str, price: float):
+        key = str(key or '').strip()
+        if not key:
+            return
+        ts = datetime.utcnow().isoformat() + 'Z'
+        trade_id = ts
+        self.tickers[key]["position"] = {
+            "entry": price,
+            "ticker": self.tickers[key].get("ticker") or key,
+            "ts": ts,
+            "trade_id": trade_id,
+        }
+        self.tickers[key]["last_direction"] = "buy"
+        # initialize rule state
+        try:
+            self.tickers[key]["last_price"] = float(price)
+            self.tickers[key]["peak_price"] = float(price)
+            self.tickers[key]["drop_count"] = 0
+        except Exception:
+            self.tickers[key]["last_price"] = None
+            self.tickers[key]["peak_price"] = None
+            self.tickers[key]["drop_count"] = 0
+        self._log_trade(key, "buy", price, None, win_reason=None, trade_id=trade_id)
+
+    def _sell(self, key: str, price: float, win_reason: Optional[str] = None):
+        key = str(key or '').strip()
+        if not key:
+            return
+        pos = self.tickers[key]["position"]
+        if pos is None:
+            return
+
+        profit = price - pos["entry"]
+        self.tickers[key]["last_direction"] = "sell"
+        trade_id = None
+        try:
+            trade_id = pos.get("trade_id")
+        except Exception:
+            trade_id = None
+        self._log_trade(key, "sell", price, profit, win_reason=win_reason, trade_id=trade_id)
+        self.tickers[key]["position"] = None
+        # reset rule state
+        self.tickers[key]["last_price"] = None
+        self.tickers[key]["peak_price"] = None
+        self.tickers[key]["drop_count"] = 0
+        # reset rule #7 state
+        self.tickers[key]["rule7_active"] = False
+        # reset rule #8 state
+        self.tickers[key]["rule8_active"] = False
+        # reset rule #5 state unless this was a rule #5 sell
+        if win_reason not in ("RULE_5",):
+            self.tickers[key]["rule5_reversal_active"] = False
+            self.tickers[key]["rule5_ready_for_reversal"] = False
+            self.tickers[key]["rule5_reversal_price"] = None
+            self.tickers[key]["rule5_scalp_active"] = False
+
+    # ---------------------------------------------------------------
+    # LOGGING
+    # ---------------------------------------------------------------
+    def _log_trade(self, key: str, direction: str, price: float, profit: Optional[float], win_reason: Optional[str] = None, trade_id: Optional[str] = None):
+        state = self.tickers.get(key, {})
+        entry = {
+            "ticker": state.get("ticker") or key,
+            "bot_id": state.get("bot_id"),
+            "bot_name": state.get("bot_name"),
+            "direction": direction,
+            "price": price,
+            "profit": profit,
+            "win_reason": win_reason,
+            "trade_id": trade_id,
+            "ts": datetime.utcnow().isoformat() + 'Z'
+        }
+
+        # Add to global history and ticker-specific history
+        self.trade_history.append(entry)
+        self.tickers[key]["trade_history"].append(entry)
+
+        # Optional callback
+        if self.on_trade:
+            try:
+                self.on_trade(entry)
+            except Exception:
+                pass
+
+    # ---------------------------------------------------------------
+    # RULE #1 - TAKE PROFIT
+    # ---------------------------------------------------------------
+    def maybe_take_profit_sell(self, ticker: str, current_price, take_profit_amount) -> bool:
+        """Sell only when current_price >= entry + take_profit_amount.
+
+        Returns True when a sell was executed.
+        """
+        key = str(ticker or '').strip()
+        if not key:
+            return False
+        self._ensure_ticker(key)
+        state = self.tickers[key]
+        pos = state.get('position')
+        if not pos:
+            return False
+        entry = None
+        try:
+            entry = pos.get('entry')
+        except Exception:
+            entry = None
+        if entry is None:
+            return False
+
+        try:
+            tp = float(take_profit_amount)
+        except Exception:
+            return False
+        if not (tp > 0):
+            return False
+
+        cp = None
+        try:
+            if isinstance(current_price, (int, float)):
+                cp = float(current_price)
+            else:
+                cp = self._parse_price(current_price)
+        except Exception:
+            cp = None
+        if cp is None:
+            return False
+        try:
+            if cp >= (float(entry) + tp):
+                self._sell(key, cp, win_reason="TAKE_PROFIT_RULE_1")
+                return True
+        except Exception:
+            return False
+        return False
+
+    # ---------------------------------------------------------------
+    # RULE #6 - LONG WAIT (DOWN > N MIN → UP BUY → SELL AT PROFIT)
+    # ---------------------------------------------------------------
+    def maybe_rule6_trade(self, ticker: str, trend: str, current_price: float, down_minutes: Optional[int] = None, profit_amount: Optional[float] = None) -> bool:
+        key = str(ticker or '').strip()
+        if not key:
+            return False
+        self._ensure_ticker(key)
+        state = self.tickers[key]
+
+        try:
+            down_m = int(down_minutes) if down_minutes is not None else 5
+        except Exception:
+            down_m = 5
+        if down_m <= 0:
+            down_m = 5
+        try:
+            prof_amt = float(profit_amount) if profit_amount is not None else 2.0
+        except Exception:
+            prof_amt = 2.0
+        if prof_amt <= 0:
+            prof_amt = 2.0
+
+        now = datetime.utcnow()
+        trend = (trend or '').lower()
+
+        # If active, sell when target reached
+        if state.get('rule6_active') and state.get('position') is not None:
+            pos = state.get('position')
+            entry = pos.get('entry') if isinstance(pos, dict) else None
+            if entry is not None and current_price >= (float(entry) + prof_amt):
+                self._sell(key, current_price, win_reason="RULE_6")
+                state['rule6_active'] = False
+                return True
+            # block normal auto-trading while waiting
+            return True
+
+        # Track continuous downtrend duration
+        if trend == 'down':
+            if state.get('rule6_down_start') is None:
+                state['rule6_down_start'] = now
+            else:
+                try:
+                    elapsed = (now - state.get('rule6_down_start')).total_seconds() / 60.0
+                    if elapsed >= down_m:
+                        state['rule6_ready_for_buy'] = True
+                except Exception:
+                    pass
+        else:
+            if not state.get('rule6_ready_for_buy'):
+                state['rule6_down_start'] = None
+
+        # When trend flips up and ready, buy and hold for profit target
+        if state.get('rule6_ready_for_buy') and trend == 'up':
+            state['rule6_ready_for_buy'] = False
+            state['rule6_down_start'] = None
+            if state.get('position') is None:
+                self._buy(key, current_price)
+            state['rule6_active'] = True
+            return True
+
+        return False
+
+    # ---------------------------------------------------------------
+    # RULE #7 - STRONG MOMENTUM BUY AFTER UPTREND
+    # ---------------------------------------------------------------
+    def maybe_rule7_trade(self, ticker: str, trend: str, current_price: float, up_minutes: Optional[int] = None) -> bool:
+        key = str(ticker or '').strip()
+        if not key:
+            return False
+        self._ensure_ticker(key)
+        state = self.tickers[key]
+
+        try:
+            up_m = int(up_minutes) if up_minutes is not None else 3
+        except Exception:
+            up_m = 3
+        if up_m <= 0:
+            up_m = 3
+
+        now = datetime.utcnow()
+        trend = (trend or '').lower()
+
+        # If already in position via Rule #7, do not block normal logic
+        if state.get('rule7_active') and state.get('position') is not None:
+            return False
+
+        # Track continuous uptrend duration
+        if trend == 'up':
+            if state.get('rule7_up_start') is None:
+                state['rule7_up_start'] = now
+            else:
+                try:
+                    elapsed = (now - state.get('rule7_up_start')).total_seconds() / 60.0
+                    if elapsed >= up_m:
+                        state['rule7_ready_for_buy'] = True
+                except Exception:
+                    pass
+        else:
+            if not state.get('rule7_ready_for_buy'):
+                state['rule7_up_start'] = None
+
+        # When ready and still trending up, buy
+        if state.get('rule7_ready_for_buy') and trend == 'up':
+            state['rule7_ready_for_buy'] = False
+            state['rule7_up_start'] = None
+            if state.get('position') is None:
+                self._buy(key, current_price)
+            state['rule7_active'] = True
+            return True
+
+        return False
+
+    # ---------------------------------------------------------------
+    # RULE #8 - ALWAYS PLACE OFFSET BUY/SELL
+    # ---------------------------------------------------------------
+    def maybe_rule8_trade(self, ticker: str, current_price: float, buy_offset: Optional[float] = None, sell_offset: Optional[float] = None) -> bool:
+        key = str(ticker or '').strip()
+        if not key:
+            return False
+        self._ensure_ticker(key)
+        state = self.tickers[key]
+
+        try:
+            bo = float(buy_offset) if buy_offset is not None else 0.25
+        except Exception:
+            bo = 0.25
+        try:
+            so = float(sell_offset) if sell_offset is not None else 0.25
+        except Exception:
+            so = 0.25
+
+        # Buy at current - offset, sell at current + offset
+        if state.get('position') is None:
+            buy_price = float(current_price) - bo
+            self._buy(key, buy_price)
+            state['rule8_active'] = True
+            return True
+        # If holding, sell using offset from current price
+        sell_price = float(current_price) + so
+        self._sell(key, sell_price, win_reason="RULE_8")
+        state['rule8_active'] = False
+        return True
+
+    # ---------------------------------------------------------------
+    # RULE #9 - UP/DOWN FLIPS (3 CYCLES IN 3 MIN)
+    # ---------------------------------------------------------------
+    def maybe_rule9_trade(self, ticker: str, trend: str, current_price: float, amount: Optional[float] = None, flips: Optional[int] = None, window_minutes: Optional[int] = None) -> bool:
+        key = str(ticker or '').strip()
+        if not key:
+            return False
+        self._ensure_ticker(key)
+        state = self.tickers[key]
+
+        try:
+            amt = float(amount) if amount is not None else 0.25
+        except Exception:
+            amt = 0.25
+
+        now = datetime.utcnow()
+        trend = (trend or '').lower()
+        if trend not in ('up', 'down'):
+            return False
+
+        try:
+            window_minutes = int(window_minutes) if window_minutes is not None else 3
+        except Exception:
+            window_minutes = 3
+        if window_minutes < 1:
+            window_minutes = 1
+        window_seconds = window_minutes * 60
+
+        try:
+            flips_needed = int(flips) if flips is not None else 3
+        except Exception:
+            flips_needed = 3
+        if flips_needed < 1:
+            flips_needed = 1
+
+        # Reset window if expired
+        if state.get('rule9_window_start') is None:
+            state['rule9_window_start'] = now
+            state['rule9_flip_count'] = 0
+            state['rule9_last_trend'] = trend
+        else:
+            try:
+                elapsed = (now - state.get('rule9_window_start')).total_seconds()
+            except Exception:
+                elapsed = 0
+            if elapsed > window_seconds:
+                state['rule9_window_start'] = now
+                state['rule9_flip_count'] = 0
+                state['rule9_last_trend'] = trend
+
+        # Count flips
+        last_trend = state.get('rule9_last_trend')
+        if last_trend and trend != last_trend:
+            state['rule9_flip_count'] = int(state.get('rule9_flip_count') or 0) + 1
+            state['rule9_last_trend'] = trend
+
+        # When threshold reached, execute quick scalp
+        if int(state.get('rule9_flip_count') or 0) >= flips_needed:
+            state['rule9_window_start'] = None
+            state['rule9_flip_count'] = 0
+            state['rule9_last_trend'] = None
+            if state.get('position') is None:
+                buy_price = float(current_price) - amt
+                sell_price = buy_price + amt
+                self._buy(key, buy_price)
+                self._sell(key, sell_price, win_reason="RULE_9")
+                return True
+        return False
+
+    # ---------------------------------------------------------------
+    # RULE #2 - STOP LOSS AT BUY PRICE
+    # ---------------------------------------------------------------
+    def maybe_stop_loss_sell(self, ticker: str, current_price, stop_loss_amount: Optional[float] = None) -> bool:
+        """Sell immediately when current_price <= entry - stop_loss_amount (Rule #2)."""
+        key = str(ticker or '').strip()
+        if not key:
+            return False
+        self._ensure_ticker(key)
+        state = self.tickers[key]
+        pos = state.get('position')
+        if not pos:
+            return False
+        entry = None
+        try:
+            entry = pos.get('entry')
+        except Exception:
+            entry = None
+        if entry is None:
+            return False
+
+        cp = None
+        try:
+            if isinstance(current_price, (int, float)):
+                cp = float(current_price)
+            else:
+                cp = self._parse_price(current_price)
+        except Exception:
+            cp = None
+        if cp is None:
+            return False
+
+        sl = 0.0
+        try:
+            if stop_loss_amount is not None:
+                sl = float(stop_loss_amount)
+        except Exception:
+            sl = 0.0
+        if sl < 0:
+            sl = 0.0
+
+        try:
+            if cp <= (float(entry) - sl):
+                self._sell(key, cp, win_reason="STOP_LOSS_RULE_2")
+                return True
+        except Exception:
+            return False
+        return False
+
+    # ---------------------------------------------------------------
+    # RULE #3 - CONSECUTIVE DROPS FROM PEAK
+    # ---------------------------------------------------------------
+    def maybe_consecutive_drops_sell(self, ticker: str, current_price, drop_count_required: Optional[int] = None) -> bool:
+        """Sell when price has dropped N consecutive times from the peak (Rule #3)."""
+        key = str(ticker or '').strip()
+        if not key:
+            return False
+        self._ensure_ticker(key)
+        state = self.tickers[key]
+        pos = state.get('position')
+        if not pos:
+            return False
+
+        try:
+            n_required = int(drop_count_required) if drop_count_required is not None else 0
+        except Exception:
+            n_required = 0
+        if n_required <= 0:
+            return False
+
+        cp = None
+        try:
+            if isinstance(current_price, (int, float)):
+                cp = float(current_price)
+            else:
+                cp = self._parse_price(current_price)
+        except Exception:
+            cp = None
+        if cp is None:
+            return False
+
+        # initialize last if needed
+        if state.get('last_price') is None:
+            state['last_price'] = float(cp)
+
+        # update consecutive drop count (double lower = sell)
+        try:
+            last_price = float(state['last_price'])
+            if cp < last_price:
+                state['drop_count'] = int(state.get('drop_count') or 0) + 1
+            elif cp > last_price:
+                # reset on uptick
+                state['drop_count'] = 0
+            state['last_price'] = float(cp)
+        except Exception:
+            pass
+
+        try:
+            if int(state.get('drop_count') or 0) >= n_required:
+                self._sell(key, cp, win_reason="CONSECUTIVE_DROPS_RULE_3")
+                return True
+        except Exception:
+            return False
+        return False
+
+    # ---------------------------------------------------------------
+    # RULE #5 - 3-MIN DOWNTREND → REVERSAL + SCALP
+    # ---------------------------------------------------------------
+    def maybe_rule5_trade(self, ticker: str, trend: str, current_price: float, down_minutes: Optional[int] = None, reversal_amount: Optional[float] = None, scalp_amount: Optional[float] = None) -> bool:
+        key = str(ticker or '').strip()
+        if not key:
+            return False
+        self._ensure_ticker(key)
+        state = self.tickers[key]
+
+        # normalize params
+        try:
+            down_m = int(down_minutes) if down_minutes is not None else 3
+        except Exception:
+            down_m = 3
+        if down_m <= 0:
+            down_m = 3
+        try:
+            rev_amt = float(reversal_amount) if reversal_amount is not None else 2.0
+        except Exception:
+            rev_amt = 2.0
+        if rev_amt <= 0:
+            rev_amt = 2.0
+        try:
+            scalp_amt = float(scalp_amount) if scalp_amount is not None else 0.25
+        except Exception:
+            scalp_amt = 0.25
+        if scalp_amt <= 0:
+            scalp_amt = 0.25
+
+        now = datetime.utcnow()
+        trend = (trend or '').lower()
+
+        # If in reversal trade, wait for price to reach target
+        if state.get('rule5_reversal_active'):
+            try:
+                rp = float(state.get('rule5_reversal_price')) if state.get('rule5_reversal_price') is not None else None
+            except Exception:
+                rp = None
+            if rp is not None and current_price >= (rp + rev_amt):
+                self._sell(key, current_price, win_reason="RULE_5")
+                state['rule5_reversal_active'] = False
+                state['rule5_reversal_price'] = None
+                state['rule5_scalp_active'] = True
+                return True
+            # block normal auto-trading while waiting
+            return True
+
+        # If in scalp mode, only scalp on uptrend; reset on non-up trend
+        if state.get('rule5_scalp_active'):
+            if trend != 'up':
+                state['rule5_scalp_active'] = False
+            else:
+                # execute quick scalp trades on each up tick
+                if state.get('position') is None:
+                    buy_price = current_price - scalp_amt
+                    sell_price = current_price + scalp_amt
+                    self._buy(key, buy_price)
+                    self._sell(key, sell_price, win_reason="RULE_5")
+                    return True
+                return True
+
+        # Track continuous downtrend duration
+        if trend == 'down':
+            if state.get('rule5_down_start') is None:
+                state['rule5_down_start'] = now
+            else:
+                try:
+                    elapsed = (now - state.get('rule5_down_start')).total_seconds() / 60.0
+                    if elapsed >= down_m:
+                        state['rule5_ready_for_reversal'] = True
+                except Exception:
+                    pass
+        else:
+            if not state.get('rule5_ready_for_reversal'):
+                state['rule5_down_start'] = None
+
+        # If ready, wait for an uptrend to start reversal trade
+        if state.get('rule5_ready_for_reversal') and trend == 'up':
+            state['rule5_ready_for_reversal'] = False
+            state['rule5_down_start'] = None
+            state['rule5_reversal_price'] = float(current_price)
+            state['rule5_reversal_active'] = True
+            if state.get('position') is None:
+                self._buy(key, current_price)
+            return True
+
+        return False
+
+    # ---------------------------------------------------------------
+    # RULE #1 MODE - BUY AS USUAL, SELL ONLY ON TAKE PROFIT
+    # ---------------------------------------------------------------
+    def on_signal_take_profit_mode(self, trend: str, price_str: Optional[str], ticker: str, take_profit_amount, auto: bool = True, rule_2_enabled: bool = False, stop_loss_amount: Optional[float] = None, rule_3_enabled: bool = False, rule_3_drop_count: Optional[int] = None, rule_4_enabled: bool = True, rule_5_enabled: bool = False, rule_5_down_minutes: Optional[int] = None, rule_5_reversal_amount: Optional[float] = None, rule_5_scalp_amount: Optional[float] = None, rule_6_enabled: bool = False, rule_6_down_minutes: Optional[int] = None, rule_6_profit_amount: Optional[float] = None, rule_7_enabled: bool = False, rule_7_up_minutes: Optional[int] = None, rule_8_enabled: bool = False, rule_8_buy_offset: Optional[float] = None, rule_8_sell_offset: Optional[float] = None, rule_9_enabled: bool = False, rule_9_amount: Optional[float] = None, rule_9_flips: Optional[int] = None, rule_9_window_minutes: Optional[int] = None, bot_id: Optional[str] = None, bot_name: Optional[str] = None) -> Dict:
+        """In Rule #1 mode, buys may still be opened, but sells only occur via take-profit.
+
+        This keeps the system able to enter positions, while overriding all other sell logic.
+        """
+        ticker = self._normalize_ticker(ticker)
+        price = self._parse_price(price_str)
+        state_key = self._state_key(bot_id, ticker)
+        if price is None or not state_key:
+            return self.summary()
+
+        trend = (trend or '').lower()
+        self._ensure_ticker(state_key, ticker=ticker, bot_id=bot_id, bot_name=bot_name)
+        state = self.tickers[state_key]
+
+        # First, attempt Rule #2 stop-loss sell if enabled.
+        if rule_2_enabled:
+            try:
+                if self.maybe_stop_loss_sell(state_key, price, stop_loss_amount):
+                    return self.summary()
+            except Exception:
+                pass
+
+        # Then, attempt Rule #3 consecutive drops if enabled.
+        if rule_3_enabled:
+            try:
+                if self.maybe_consecutive_drops_sell(state_key, price, rule_3_drop_count):
+                    return self.summary()
+            except Exception:
+                pass
+
+        # Then, attempt take-profit sell if we already have a position.
+        try:
+            self.maybe_take_profit_sell(state_key, price, take_profit_amount)
+        except Exception:
+            pass
+
+        if not auto:
+            return self.summary()
+
+        # RULE #4: trade only during market hours (Mon–Fri 9:30–16:00)
+        if rule_4_enabled and not self._is_trading_hours():
+            return self.summary()
+
+        # If position still open, do not sell on down/other signals.
+        if state.get('position') is not None:
+            return self.summary()
+
+        # No open position: allow normal buy behavior, but never sell.
+        if not state.get('first_cycle_done'):
+            if trend == 'down' and state.get('position') is None:
+                self._buy(state_key, price)
+                state['waiting_for_second_down'] = True
+                return self.summary()
+
+            if trend == 'up' and state.get('waiting_for_second_down'):
+                # ignore UP after first buy
+                return self.summary()
+
+            if trend == 'down' and state.get('waiting_for_second_down'):
+                # normally this would sell; in Rule #1 mode we just exit first-cycle
+                state['first_cycle_done'] = True
+                state['waiting_for_second_down'] = False
+                return self.summary()
+
+            # If first trend is UP → start normal mode and buy
+            if trend == 'up' and state.get('position') is None:
+                state['first_cycle_done'] = True
+                self._buy(state_key, price)
+                return self.summary()
+
+        # Normal mode buy rules (sell rules intentionally disabled)
+        if trend == 'up' and state.get('position') is None:
+            self._buy(state_key, price)
+
+        return self.summary()
+
+    # ---------------------------------------------------------------
+    # SUMMARY
+    # ---------------------------------------------------------------
+    def summary(self) -> Dict:
+        summary_dict = {}
+        bots_dict = {}
+
+        for key, state in self.tickers.items():
+            closed_profits = [t["profit"] for t in state["trade_history"] if t["profit"] is not None]
+            total_pnl = sum(closed_profits) if closed_profits else 0
+            wins = sum(1 for p in closed_profits if p > 0)
+            losses = sum(1 for p in closed_profits if p <= 0)
+            win_rate = (wins / len(closed_profits) * 100) if closed_profits else 0
+            last_trade = state["trade_history"][-1] if state["trade_history"] else None
+            bot_id = state.get("bot_id") or key
+            bot_name = state.get("bot_name")
+            ticker = state.get("ticker") or key
+
+            bot_summary = {
+                "bot_id": bot_id,
+                "bot_name": bot_name,
+                "ticker": ticker,
+                "position": "long" if state["position"] else "flat",
+                "entry_price": state["position"]["entry"] if state["position"] else None,
+                "first_cycle_done": state["first_cycle_done"],
+                "last_direction": state["last_direction"],
+                "last_trade": last_trade,
+                "total_pnl": total_pnl,
+                "wins": wins,
+                "losses": losses,
+                "win_rate": round(win_rate, 2),
+                "trade_history": state["trade_history"].copy()
+            }
+
+            bots_dict[bot_id] = bot_summary
+            if not state.get("bot_id"):
+                summary_dict[ticker] = bot_summary
+
+        return {
+            "tickers": summary_dict,
+            "bots": bots_dict,
+            "total_pnl_all_tickers": sum(t["total_pnl"] for t in bots_dict.values()),
+            "all_trades": self.trade_history.copy()
+        }
+
+    # ---------------------------------------------------------------
+    # RESET / CLEAR
+    # ---------------------------------------------------------------
+    def clear_bot(self, bot_id: Optional[str], ticker: Optional[str] = None):
+        key = self._state_key(bot_id, ticker or '')
+        if not key:
+            return
+        try:
+            if key in self.tickers:
+                del self.tickers[key]
+        except Exception:
+            pass
+        try:
+            self.trade_history = [t for t in self.trade_history if t.get("bot_id") != bot_id]
+        except Exception:
+            pass
+
+    def clear_all(self):
+        try:
+            self.tickers = {}
+            self.trade_history = []
+        except Exception:
+            pass
