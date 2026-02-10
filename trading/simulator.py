@@ -22,6 +22,17 @@ def persist_trade_as_record(trade: dict):
     Args:
         trade: Dictionary containing trade information (ticker, price, direction, etc.)
     """
+    def extract_price(d):
+        """Extract price from dict, trying multiple field names."""
+        if not isinstance(d, dict):
+            return None
+        keys = ['price', 'p', 'entry_price', 'buy_price', 'sell_price', 'open_price', 'close_price', 'amount']
+        for k in keys:
+            v = d.get(k)
+            if v is not None:
+                return v
+        return None
+    
     try:
         meta = trade.get("meta") or {}
         try:
@@ -38,19 +49,17 @@ def persist_trade_as_record(trade: dict):
         win_reason = trade.get("win_reason") or (meta.get("win_reason") if isinstance(meta, dict) else None)
         bot_id = trade.get("bot_id") or (meta.get("bot_id") if isinstance(meta, dict) else None)
         bot_name = trade.get("bot_name") or (meta.get("bot_name") if isinstance(meta, dict) else None)
+        trade_id = trade.get("trade_id") or (meta.get("trade_id") if isinstance(meta, dict) else None)
 
         # If the trade uses a generic `price` and `ts` fields (common shape),
         # infer buy/sell values from them based on direction when explicit
         # buy/sell fields are missing. Also accept `meta.price` / `meta.ts`.
         try:
-            # helper to read common price/time keys
-            price_in_trade = trade.get('price')
+            # helper to read common price/time keys - try all variations
+            price_in_trade = extract_price(trade)
             time_in_trade = trade.get('ts') or trade.get('time')
-            price_in_meta = None
-            time_in_meta = None
-            if isinstance(meta, dict):
-                price_in_meta = meta.get('price') or meta.get('p')
-                time_in_meta = meta.get('ts') or meta.get('time') or meta.get('timestamp')
+            price_in_meta = extract_price(meta) if isinstance(meta, dict) else None
+            time_in_meta = meta.get('ts') or meta.get('time') or meta.get('timestamp') if isinstance(meta, dict) else None
 
             # if direction explicit, favor it
             direction = (trade.get('direction') or (meta.get('direction') if isinstance(meta, dict) else None) or '').lower()
@@ -117,12 +126,14 @@ def persist_trade_as_record(trade: dict):
                     conn.row_factory = sqlite3.Row
                     cur = conn.cursor()
                     cur.execute(
-                        "SELECT id, meta FROM records WHERE ticker = ? AND (sell_time IS NULL OR sell_time = '') ORDER BY ts DESC LIMIT 1",
+                        "SELECT id, meta, buy_price, buy_time FROM records WHERE ticker = ? AND (sell_time IS NULL OR sell_time = '') ORDER BY ts DESC LIMIT 1",
                         (trade.get("ticker"),),
                     )
                     row = cur.fetchone()
                     if row:
                         rec_id = row["id"]
+                        existing_buy_price = row["buy_price"]
+                        existing_buy_time = row["buy_time"]
                         # merge meta JSONs if possible
                         existing_meta = {}
                         try:
@@ -137,16 +148,29 @@ def persist_trade_as_record(trade: dict):
                         except Exception:
                             pass
 
+                        if not merged_meta.get("trade_id"):
+                            merged_meta["trade_id"] = trade_id or merged_meta.get("buy_time") or merged_meta.get("entry_time") or merged_meta.get("ts")
+
                         # If we have buy info (from candidate lookup or merged_meta), ensure DB buy fields are set
                         try:
-                            # prefer values we computed earlier, fall back to merged_meta if present
-                            db_buy_price = buy_price or merged_meta.get('buy_price') or merged_meta.get('entry') or merged_meta.get('price') if merged_meta.get('direction') == 'buy' else buy_price or merged_meta.get('buy_price')
+                            # prefer incoming buy info, then existing DB value, then meta/price hints
+                            db_buy_price = buy_price if buy_price is not None else (
+                                existing_buy_price
+                                or merged_meta.get('buy_price')
+                                or extract_price(merged_meta)
+                                or extract_price(trade)
+                            )
                         except Exception:
-                            db_buy_price = buy_price
+                            db_buy_price = buy_price if buy_price is not None else (existing_buy_price or extract_price(trade))
                         try:
-                            db_buy_time = buy_time or merged_meta.get('buy_time') or merged_meta.get('entry_time') or merged_meta.get('ts')
+                            db_buy_time = buy_time if buy_time is not None else (
+                                existing_buy_time
+                                or merged_meta.get('buy_time')
+                                or merged_meta.get('entry_time')
+                                or merged_meta.get('ts')
+                            )
                         except Exception:
-                            db_buy_time = buy_time
+                            db_buy_time = buy_time if buy_time is not None else existing_buy_time
 
                         # compute profit if possible
                         computed_profit = None
@@ -183,6 +207,16 @@ def persist_trade_as_record(trade: dict):
                 print(f"Failed DB-driven pairing update: {e}")
 
         # Fallback: insert a fresh record (handles buys and unmatched sells)
+        inferred_buy_price = buy_price
+        
+        # Aggressively hunt for price in the local trade dict
+        if inferred_buy_price is None:
+            inferred_buy_price = extract_price(trade)
+        
+        # If still null, hunt in meta
+        if inferred_buy_price is None and isinstance(meta, dict):
+            inferred_buy_price = extract_price(meta)
+
         obs = {
             "ts": ts,
             "image_path": None,
@@ -190,7 +224,7 @@ def persist_trade_as_record(trade: dict):
             "ticker": trade.get("ticker"),
             "price": str(trade.get("price")) if trade.get("price") is not None else None,
             "trend": trade.get("direction"),
-            "buy_price": buy_price,
+            "buy_price": inferred_buy_price,
             "sell_price": sell_price,
             "buy_time": buy_time,
             "sell_time": sell_time,
@@ -199,6 +233,12 @@ def persist_trade_as_record(trade: dict):
             "bot_name": bot_name,
             "meta": trade,
         }
+        try:
+            if isinstance(obs.get("meta"), dict):
+                if not obs["meta"].get("trade_id"):
+                    obs["meta"]["trade_id"] = trade_id or buy_time or ts
+        except Exception:
+            pass
         # If both buy and sell price are known, compute profit and include in meta
         try:
             b = obs.get('buy_price')

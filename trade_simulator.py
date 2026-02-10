@@ -257,10 +257,13 @@ class TradeSimulator:
         key = str(key or '').strip()
         if not key:
             return
+        ts = datetime.utcnow().isoformat() + 'Z'
+        trade_id = ts
         self.tickers[key]["position"] = {
             "entry": price,
             "ticker": self.tickers[key].get("ticker") or key,
-            "ts": datetime.utcnow().isoformat() + 'Z'
+            "ts": ts,
+            "trade_id": trade_id,
         }
         self.tickers[key]["last_direction"] = "buy"
         # initialize rule state
@@ -272,7 +275,7 @@ class TradeSimulator:
             self.tickers[key]["last_price"] = None
             self.tickers[key]["peak_price"] = None
             self.tickers[key]["drop_count"] = 0
-        self._log_trade(key, "buy", price, None, win_reason=None)
+        self._log_trade(key, "buy", price, None, win_reason=None, trade_id=trade_id)
 
     def _sell(self, key: str, price: float, win_reason: Optional[str] = None):
         key = str(key or '').strip()
@@ -284,7 +287,12 @@ class TradeSimulator:
 
         profit = price - pos["entry"]
         self.tickers[key]["last_direction"] = "sell"
-        self._log_trade(key, "sell", price, profit, win_reason=win_reason)
+        trade_id = None
+        try:
+            trade_id = pos.get("trade_id")
+        except Exception:
+            trade_id = None
+        self._log_trade(key, "sell", price, profit, win_reason=win_reason, trade_id=trade_id)
         self.tickers[key]["position"] = None
         # reset rule state
         self.tickers[key]["last_price"] = None
@@ -304,7 +312,7 @@ class TradeSimulator:
     # ---------------------------------------------------------------
     # LOGGING
     # ---------------------------------------------------------------
-    def _log_trade(self, key: str, direction: str, price: float, profit: Optional[float], win_reason: Optional[str] = None):
+    def _log_trade(self, key: str, direction: str, price: float, profit: Optional[float], win_reason: Optional[str] = None, trade_id: Optional[str] = None):
         state = self.tickers.get(key, {})
         entry = {
             "ticker": state.get("ticker") or key,
@@ -314,6 +322,7 @@ class TradeSimulator:
             "price": price,
             "profit": profit,
             "win_reason": win_reason,
+            "trade_id": trade_id,
             "ts": datetime.utcnow().isoformat() + 'Z'
         }
 

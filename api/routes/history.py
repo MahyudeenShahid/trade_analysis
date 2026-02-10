@@ -18,6 +18,122 @@ from trading.simulator import trader
 
 router = APIRouter(prefix="", tags=["history"])
 
+TRADE_SCREENSHOTS_DIR = os.path.abspath(
+    os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "trade_screenshots")
+)
+
+
+def _parse_iso(ts: Optional[str]):
+    if not ts:
+        return None
+    try:
+        raw = str(ts)
+        if raw.endswith("Z"):
+            raw = raw[:-1]
+        return datetime.fromisoformat(raw)
+    except Exception:
+        return None
+
+
+def _extract_meta(record: dict) -> dict:
+    meta = record.get("meta") if isinstance(record, dict) else None
+    if isinstance(meta, str):
+        try:
+            meta = json.loads(meta)
+        except Exception:
+            meta = {}
+    if not isinstance(meta, dict):
+        meta = {}
+    return meta
+
+
+def _extract_trade_id(record: dict) -> Optional[str]:
+    meta = _extract_meta(record)
+    trade_id = record.get("trade_id") or meta.get("trade_id")
+    if trade_id:
+        return str(trade_id)
+    for key in ("buy_time", "entry_time", "ts", "time"):
+        if meta.get(key):
+            return str(meta.get(key))
+    for key in ("buy_time", "ts", "time"):
+        if record.get(key):
+            return str(record.get(key))
+    return None
+
+
+def _trade_day(record: dict) -> Optional[str]:
+    trade_id = _extract_trade_id(record)
+    dt = _parse_iso(trade_id)
+    if not dt:
+        dt = _parse_iso(record.get("ts"))
+    if not dt:
+        return None
+    return dt.strftime("%Y%m%d")
+
+
+def _safe_join(base_dir: str, rel_path: str) -> Optional[str]:
+    base = os.path.abspath(base_dir)
+    target = os.path.abspath(os.path.join(base, rel_path))
+    if not target.startswith(base):
+        return None
+    return target
+
+
+def _collect_trade_screenshots(record: dict) -> List[str]:
+    meta = _extract_meta(record)
+    candidates = []
+    trade_id = _extract_trade_id(record)
+    if trade_id:
+        candidates.append(str(trade_id))
+    for key in ("ts", "buy_time", "time"):
+        if record.get(key):
+            candidates.append(str(record.get(key)))
+    for key in ("ts", "buy_time", "time", "entry_time"):
+        if meta.get(key):
+            candidates.append(str(meta.get(key)))
+
+    candidates = [c.replace(":", "-") for c in candidates if c]
+    if not candidates:
+        return []
+
+    day = _trade_day(record)
+
+    search_roots = []
+    if day:
+        search_roots.append(os.path.join(TRADE_SCREENSHOTS_DIR, day))
+    search_roots.append(TRADE_SCREENSHOTS_DIR)
+
+    target_dir = None
+    for root in search_roots:
+        if not os.path.exists(root):
+            continue
+        for dirpath, dirnames, _ in os.walk(root):
+            base = os.path.basename(dirpath)
+            if not base.startswith("trade_"):
+                continue
+            for cand in candidates:
+                if base == f"trade_{cand}":
+                    target_dir = dirpath
+                    break
+            if target_dir:
+                break
+        if target_dir:
+            break
+
+    if not target_dir:
+        return []
+
+    images = []
+    for dirpath, _, filenames in os.walk(target_dir):
+        for fname in sorted(filenames):
+            ext = os.path.splitext(fname)[1].lower()
+            if ext not in (".png", ".jpg", ".jpeg"):
+                continue
+            full = os.path.join(dirpath, fname)
+            rel = os.path.relpath(full, TRADE_SCREENSHOTS_DIR).replace(os.sep, "/")
+            images.append(f"/trade_screenshots/{rel}")
+    return images
+
 
 @router.post("/ingest")
 async def ingest(
@@ -226,6 +342,12 @@ def api_history(
     for r in rows:
         if r.get("image_path"):
             r["image_url"] = "/uploads/" + os.path.basename(r["image_path"])
+        try:
+            r["trade_id"] = _extract_trade_id(r)
+            r["screenshots"] = _collect_trade_screenshots(r)
+        except Exception:
+            r["trade_id"] = _extract_trade_id(r)
+            r["screenshots"] = []
     return rows
 
 
@@ -242,6 +364,14 @@ def api_uploads(filename: str):
     """
     path = os.path.join(UPLOADS_DIR, filename)
     if not os.path.exists(path):
+        return JSONResponse(status_code=404, content={"detail": "file not found"})
+    return FileResponse(path)
+
+
+@router.get("/trade_screenshots/{filename:path}")
+def api_trade_screenshots(filename: str):
+    path = _safe_join(TRADE_SCREENSHOTS_DIR, filename)
+    if not path or not os.path.exists(path):
         return JSONResponse(status_code=404, content={"detail": "file not found"})
     return FileResponse(path)
 

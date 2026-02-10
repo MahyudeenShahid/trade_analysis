@@ -443,9 +443,10 @@ class TradeScreenshotRecorder:
         if img_path:
             self.pre_buffer.append(img_path)
         if self.active_trade and self.trade_dir:
-            self._copy_to(os.path.join(self.trade_dir, "during"), img_path)
+            # store all frames in a single trade folder (no pre/during/post subfolders)
+            self._copy_to(self.trade_dir, img_path)
         elif self.after_remaining > 0 and self.trade_dir:
-            self._copy_to(os.path.join(self.trade_dir, "post"), img_path)
+            self._copy_to(self.trade_dir, img_path)
             self.after_remaining -= 1
             if self.after_remaining <= 0:
                 self.trade_dir = None
@@ -461,13 +462,21 @@ class TradeScreenshotRecorder:
         self.trade_dir = trade_dir
         # copy pre-buffer
         for p in list(self.pre_buffer):
-            self._copy_to(os.path.join(trade_dir, "pre"), p)
+            # keep pre-trade frames in the same folder to preserve sequence
+            self._copy_to(trade_dir, p)
         self.active_trade = True
         self.after_remaining = 0
 
     def end_trade(self):
+        # ensure at least one closing frame is kept
+        if self.trade_dir and self.pre_buffer:
+            try:
+                last = list(self.pre_buffer)[-1]
+                self._copy_to(self.trade_dir, last)
+            except Exception:
+                pass
         self.active_trade = False
-        self.after_remaining = self.post_count
+        self.after_remaining = max(1, self.post_count)
 
 
 if __name__ == "__main__":

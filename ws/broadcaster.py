@@ -129,7 +129,7 @@ async def broadcaster_loop():
                                                 for ev in trader.trade_history[before_count:after_count]:
                                                     if bot_id and ev.get('bot_id') != bot_id:
                                                         continue
-                                                    svc.handle_trade_event(ev.get('direction'), ev.get('ticker'), ev.get('ts'))
+                                                    svc.handle_trade_event(ev.get('direction'), ev.get('ticker'), ev.get('trade_id') or ev.get('ts'))
                                             except Exception:
                                                 pass
                                     except Exception:
@@ -143,7 +143,7 @@ async def broadcaster_loop():
                                             for ev in trader.trade_history[before_count:after_count]:
                                                 if bot_id and ev.get('bot_id') != bot_id:
                                                     continue
-                                                svc.handle_trade_event(ev.get('direction'), ev.get('ticker'), ev.get('ts'))
+                                                svc.handle_trade_event(ev.get('direction'), ev.get('ticker'), ev.get('trade_id') or ev.get('ts'))
                                         except Exception:
                                             pass
                     except Exception:
