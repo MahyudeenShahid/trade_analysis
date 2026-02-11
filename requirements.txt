@@ -8,8 +8,10 @@ opencv-contrib-python>=4.7.0
 scipy>=1.9
 pywin32>=304
 psutil>=5.9
+matplotlib>=3.5
 
 # Notes:
 # - `opencv-contrib-python` includes OpenCV extra modules used by the chart detector
 # - `pywin32` is required for the `win32gui`/`win32ui` APIs on Windows
+# - `matplotlib` is used for chart analysis visualization and debugging
 # - Some modules (chart line detector, cv2) are used lazily; remove any you don't need

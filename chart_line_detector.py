@@ -43,6 +43,71 @@ class ChartLineDetector:
         self.use_multi_window = use_multi_window
         self.momentum_weight = momentum_weight
 
+    def analyze_with_details(self, image_path):
+        """
+        Process a chart image and return detailed analysis data.
+        
+        Returns:
+            dict: Contains trend direction, slope, turning point index, and coordinates
+                  {
+                      'trend': "up"/"down"/"none",
+                      'slope': float,
+                      'flip_index': int,
+                      'points': numpy array of normalized points,
+                      'segment': numpy array of final segment points,
+                      'success': bool
+                  }
+        """
+        try:
+            points = self._extract_chart_line(image_path)
+            if points is None or len(points) == 0:
+                return {'success': False, 'error': 'No chart line detected'}
+
+            cleaned = self._clean_and_smooth_points(points)
+            if len(cleaned) == 0:
+                return {'success': False, 'error': 'Line cleaning failed'}
+
+            densified = self._densify_steep_sections(cleaned)
+            if len(densified) == 0:
+                return {'success': False, 'error': 'Line densification failed'}
+
+            normalized = self._normalize_points(densified)
+            if normalized is None or len(normalized) < 2:
+                return {'success': False, 'error': 'Insufficient points'}
+
+            # Get detailed analysis
+            x_vals = normalized[:, 0]
+            y_vals = normalized[:, 1]
+            
+            # Use last 15% for trend analysis
+            lookback_pct = 0.15
+            lookback_points = max(5, int(len(normalized) * lookback_pct))
+            flip_idx = len(normalized) - lookback_points
+            
+            segment = normalized[flip_idx:]
+            
+            # Calculate slope of final segment
+            slope = 0.0
+            if len(segment) >= 2:
+                from scipy.ndimage import gaussian_filter1d
+                segment_y_smooth = gaussian_filter1d(segment[:, 1], sigma=1.0)
+                slope, _ = np.polyfit(segment[:, 0], segment_y_smooth, 1)
+            
+            trend = self._compute_trend(normalized)
+            
+            return {
+                'success': True,
+                'trend': trend,
+                'slope': float(slope),
+                'flip_index': int(flip_idx),
+                'points': normalized,
+                'segment': segment,
+                'raw_points': points
+            }
+
+        except Exception as e:
+            return {'success': False, 'error': str(e)}
+
     def __call__(self, image_path):
         """
         Process a chart image and determine the trend direction.
@@ -266,6 +331,8 @@ class ChartLineDetector:
     def _normalize_points(self, points, width=100, height=100):
         """
         Normalize coordinates to a standard scale with defensive guards.
+        In image coordinates: y=0 is top, larger y is bottom
+        After normalization: larger y means higher price/value (top of chart)
         """
         pts = np.array(points, dtype=float)
         if pts.size == 0:
@@ -280,71 +347,29 @@ class ChartLineDetector:
             dy = 1.0
 
         normalized = pts.copy()
+        # Normalize x from 0 to (width-1)
         normalized[:, 0] = (pts[:, 0] - x_min) / dx * (width - 1)
-        # Invert y so that larger values mean "higher" on chart (consistent with plotting coordinates)
-        normalized[:, 1] = (pts[:, 1] - y_min) / dy * (height - 1)
-        # Flip y so origin at bottom (optional depending on interpretation)
-        normalized[:, 1] = (height - 1) - normalized[:, 1]
+        # Normalize and flip y: in image coords small y=top, we want small y=bottom for chart analysis
+        # So we invert: top of image (small pts y) becomes large normalized y (high price)
+        normalized[:, 1] = (y_max - pts[:, 1]) / dy * (height - 1)
         return normalized
-
-    def _find_last_turning_point(self, y_vals, min_swing=2.0, min_run=3):
-        """
-        Find the index of the last significant turning point (local min/max).
-        A turning point is where direction changes after a sustained move.
-        
-        Args:
-            y_vals: normalized y values
-            min_swing: minimum y-change to count as a real swing (not noise)
-            min_run: minimum number of points moving in same direction
-        
-        Returns:
-            index of the last turning point, or 0 if none found
-        """
-        if len(y_vals) < 5:
-            return 0
-        
-        # Compute direction at each point: +1 = up, -1 = down, 0 = flat
-        dy = np.diff(y_vals)
-        directions = np.sign(dy)
-        
-        # Smooth out tiny wiggles: require sustained direction
-        smoothed_dir = np.zeros_like(directions)
-        current_dir = 0
-        run_length = 0
-        for i in range(len(directions)):
-            if directions[i] == current_dir or directions[i] == 0:
-                run_length += 1
-            else:
-                if run_length >= min_run:
-                    current_dir = directions[i]
-                    run_length = 1
-                else:
-                    run_length += 1
-            smoothed_dir[i] = current_dir if current_dir != 0 else directions[i]
-        
-        # Find turning points: where smoothed direction changes
-        turning_points = []
-        for i in range(1, len(smoothed_dir)):
-            if smoothed_dir[i] != 0 and smoothed_dir[i-1] != 0 and smoothed_dir[i] != smoothed_dir[i-1]:
-                # Check if swing is significant
-                # Look back to find the local extremum
-                j = i - 1
-                while j > 0 and smoothed_dir[j] == smoothed_dir[i-1]:
-                    j -= 1
-                swing = abs(y_vals[i] - y_vals[j])
-                if swing >= min_swing:
-                    turning_points.append(i)
-        
-        if not turning_points:
-            # No turning point found — use a fraction from the end
-            return max(0, len(y_vals) - int(len(y_vals) * self.end_fraction))
-        
-        return turning_points[-1]  # Return the LAST turning point
 
     def _compute_trend(self, normalized_points):
         """
-        Compute trend AFTER the last turning point (most recent direction change).
-        This gives the current trading direction since the last reversal.
+        SIMPLE trend detection: Check if the chart is going UP or DOWN at the END (current moment).
+        
+        Algorithm:
+        1. Take the last portion of the chart (e.g., last 15-20% of points)
+        2. Fit a linear regression line through these points
+        3. Check the slope:
+           - Positive slope → UP (price increasing)
+           - Negative slope → DOWN (price decreasing)
+        
+        This tells us the direction RIGHT NOW at the endpoint.
+        
+        Coordinate system: larger y = higher price
+        Positive slope = upward trend, Negative slope = downward trend
+        
         Returns "up", "down", or "none".
         """
         pts = np.array(normalized_points, dtype=float)
@@ -354,60 +379,38 @@ class ChartLineDetector:
         x_vals = pts[:, 0]
         y_vals = pts[:, 1]
         
-        # Find the last turning point
-        turn_idx = self._find_last_turning_point(y_vals, min_swing=1.5, min_run=2)
+        # Use the last portion of the chart for trend detection
+        # This percentage determines how "recent" we look
+        # 15% = very recent (last few seconds/minutes)
+        # 30% = slightly longer view
+        lookback_pct = 0.15
+        lookback_points = max(5, int(len(pts) * lookback_pct))
         
-        # Get segment from turning point to end
-        segment = pts[turn_idx:]
-        if len(segment) < 2:
-            segment = pts[-max(3, int(len(pts) * 0.15)):]
+        # Get the final segment
+        final_segment_x = x_vals[-lookback_points:]
+        final_segment_y = y_vals[-lookback_points:]
         
-        seg_x = segment[:, 0]
-        seg_y = segment[:, 1]
+        # Apply light smoothing to reduce noise
+        from scipy.ndimage import gaussian_filter1d
+        final_segment_y_smooth = gaussian_filter1d(final_segment_y, sigma=1.0)
         
-        # Method 1: Linear regression on segment after turning point
-        slope = 0.0
+        # Fit linear regression to get the slope
         try:
-            if len(segment) >= 2:
-                a, b = np.polyfit(seg_x, seg_y, 1)
-                slope = a
-        except Exception:
-            pass
+            slope, intercept = np.polyfit(final_segment_x, final_segment_y_smooth, 1)
+        except Exception as e:
+            print(f"Linear regression failed: {e}")
+            return "none"
         
-        # Method 2: Direct endpoint comparison (most intuitive for traders)
-        y_at_turn = y_vals[turn_idx]
-        y_at_end = y_vals[-1]
-        endpoint_delta = y_at_end - y_at_turn
+        # Determine trend from slope
+        # Use a small threshold to avoid noise (0.1 is about 0.1% change per normalized unit)
+        slope_threshold = 0.15
         
-        # Method 3: Recent momentum (last few points)
-        recent_n = min(5, len(segment))
-        recent_delta = y_vals[-1] - y_vals[-recent_n] if recent_n > 1 else 0
-        
-        # Combined decision: weight endpoint delta heavily (what traders see)
-        # Normalize by segment length for fair comparison
-        seg_len = max(1, len(segment))
-        normalized_delta = endpoint_delta / (seg_len ** 0.5)  # sqrt to not over-penalize short segments
-        
-        # Thresholds (tuned for normalized 0-100 scale)
-        delta_thresh = 1.0  # minimum y-change to call a trend
-        slope_thresh = self.slope_threshold
-        
-        # Score combining all signals
-        score = 0.0
-        if abs(endpoint_delta) > delta_thresh:
-            score += np.sign(endpoint_delta) * min(abs(endpoint_delta), 10) * 0.5
-        if abs(slope) > slope_thresh:
-            score += np.sign(slope) * min(abs(slope), 1.0) * 3.0
-        if abs(recent_delta) > 0.5:
-            score += np.sign(recent_delta) * min(abs(recent_delta), 5) * 0.3
-        
-        # Decision
-        if score > 0.5 or endpoint_delta > delta_thresh:
+        if slope > slope_threshold:
             return "up"
-        elif score < -0.5 or endpoint_delta < -delta_thresh:
+        elif slope < -slope_threshold:
             return "down"
         else:
-            return "none"
+            return "none"  # Nearly flat/sideways
 
     def _last_y_direction_change(self, points):
         """
