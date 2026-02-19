@@ -6,6 +6,7 @@ from . import history
 from . import trades
 from . import bots
 from . import websocket
+from . import chart
 
 __all__ = [
     "windows",
@@ -14,4 +15,5 @@ __all__ = [
     "trades",
     "bots",
     "websocket",
+    "chart",
 ]

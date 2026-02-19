@@ -22,7 +22,6 @@ Outputs (when outdir is provided):
   original_with_roi.png, zoom.png, edges.png, edges_traced.png, traced.png
 """
 
-import os
 import sys
 from dataclasses import dataclass
 from typing import Optional
@@ -89,7 +88,7 @@ class ChartDirectionDetector:
         Maximum consecutive blank columns before stopping the end extension. Default 18.
     slope_threshold : float
         Gradient magnitude below which motion is considered flat (not UP/DOWN).
-        Default 0.15.
+        Default 0.03.
     last_w_frac_graph : float
         Fraction of total graph x-span used as ROI width. Default 0.28.
     full_y_margin_frac : float
@@ -114,7 +113,7 @@ class ChartDirectionDetector:
         density_threshold: float = 0.18,
         band_half_height: int = 22,
         max_end_gap: int = 18,
-        slope_threshold: float = 0.15,
+        slope_threshold: float = 0.03,
         last_w_frac_graph: float = 0.28,
         full_y_margin_frac: float = 0.02,
         zoom_factor: float = 3.0,
@@ -141,7 +140,7 @@ class ChartDirectionDetector:
     # Public interface
     # ------------------------------------------------------------------
 
-    def __call__(self, image_path: str, outdir: Optional[str] = None) -> str:
+    def __call__(self, image_path: str) -> str:
         """
         Analyze a chart screenshot and return the trend direction.
 
@@ -149,46 +148,38 @@ class ChartDirectionDetector:
         ----------
         image_path : str
             Path to the input screenshot.
-        outdir : str, optional
-            If provided, all intermediate debug images are written here.
 
         Returns
         -------
         str
-            "UP", "DOWN", or "ERROR: <message>"
+            "UP", "DOWN", "NONE", or "ERROR: <message>"
         """
         try:
-            result = self.analyze_with_details(image_path, outdir=outdir)
+            result = self.analyze_with_details(image_path)
             if result["success"]:
                 return result["direction"]
             return "ERROR: " + result["error"]
         except Exception as exc:
             return f"ERROR: {exc}"
 
-    def analyze_with_details(self, image_path: str, outdir: Optional[str] = None) -> dict:
+    def analyze_with_details(self, image_path: str) -> dict:
         """
-        Full analysis returning intermediate data alongside the direction result.
+        Full analysis returning the direction result.
 
         Parameters
         ----------
         image_path : str
             Path to the input screenshot.
-        outdir : str, optional
-            Directory to save all debug images.  Created if it does not exist.
 
         Returns
         -------
         dict with keys:
             success        - bool
-            direction      - "UP" | "DOWN"   (only when success is True)
-            end_dir        - +1 (UP) | -1 (DOWN)
+            direction      - "UP" | "DOWN" | "NONE"  (only when success is True)
+            end_dir        - +1 (UP) | -1 (DOWN) | 0 (NONE)
             trend_start_x  - x index where the final trend segment begins (zoom coords)
-            roi            - _ROI object: the analysed rectangle on the original image
             error          - str  (only when success is False)
         """
-        if outdir:
-            os.makedirs(outdir, exist_ok=True)
-
         # -- 1. Load & margin-crop ----------------------------------------
         img = self._load_image(image_path)
         H, W = img.shape[:2]
@@ -199,22 +190,14 @@ class ChartDirectionDetector:
         full_crop = img[crop_y0:crop_y1, :]
 
         # -- 2. Full-image edge pipeline ----------------------------------
-        full_edges_raw = self._canny_edges(full_crop)
-        self._save(outdir, "full_edges_raw.png", full_edges_raw)
-
-        full_edges_clean = self._remove_horizontal_artifacts(full_edges_raw)
-        self._save(outdir, "full_edges_clean.png", full_edges_clean)
-
+        full_edges_raw     = self._canny_edges(full_crop)
+        full_edges_clean   = self._remove_horizontal_artifacts(full_edges_raw)
         full_edges_bridged = self._bridge_gaps(full_edges_clean)
-        self._save(outdir, "full_edges_bridged.png", full_edges_bridged)
 
         # -- 3. Component selection ---------------------------------------
         comp_full = self._pick_graph_component(full_edges_bridged)
-        self._save(outdir, "full_component.png", comp_full)
-
         k_ellipse = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
-        comp_d = cv2.dilate(comp_full, k_ellipse, iterations=1)
-        self._save(outdir, "full_component_dilated.png", comp_d)
+        comp_d    = cv2.dilate(comp_full, k_ellipse, iterations=1)
 
         x0g, x1g, y0g, y1g = self._component_bounds(comp_d)
         if x1g < 0:
@@ -229,38 +212,20 @@ class ChartDirectionDetector:
         x1g_ext = self._extend_end(full_edges_clean, y_full, x1g)
         x1g_ext = min(full_edges_clean.shape[1] - 1, max(x1g, x1g_ext))
 
-        if outdir:
-            full_edges_bgr = cv2.cvtColor(full_edges_clean, cv2.COLOR_GRAY2BGR)
-            full_traced = self._draw_trace(full_edges_bgr, y_full, x0g, x1g_ext)
-            end_pt = (x1g_ext, int(round(float(y_full[min(x1g_ext, len(y_full) - 1)]))))
-            cv2.circle(full_traced, end_pt, 6, (0, 0, 255), -1)
-            cv2.putText(full_traced, "END",
-                        (max(0, x1g_ext - 40), max(20, end_pt[1] - 10)),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2, cv2.LINE_AA)
-            self._save(outdir, "full_traced.png", full_traced)
-
         # -- 5. ROI at graph end ------------------------------------------
         roi = self._build_roi(img, comp_d, crop_y0, x0g, x1g_ext, y0g, y1g)
 
-        if outdir:
-            original_box = img.copy()
-            cv2.rectangle(original_box, (roi.x0, roi.y0), (roi.x1 - 1, roi.y1 - 1), (0, 0, 255), 2)
-            self._save(outdir, "original_with_roi.png", original_box)
-
         # -- 6. Zoom ROI --------------------------------------------------
         roi_bgr = img[roi.y0:roi.y1, roi.x0:roi.x1].copy()
-        zoom = cv2.resize(roi_bgr, None,
-                          fx=self.zoom_factor, fy=self.zoom_factor,
-                          interpolation=cv2.INTER_CUBIC)
-        self._save(outdir, "zoom.png", zoom)
+        zoom    = cv2.resize(roi_bgr, None,
+                             fx=self.zoom_factor, fy=self.zoom_factor,
+                             interpolation=cv2.INTER_CUBIC)
 
         # -- 7. Zoom edge pipeline ----------------------------------------
-        edges_zoom_raw   = self._canny_edges(zoom)
-        edges_zoom_clean = self._remove_horizontal_artifacts(edges_zoom_raw)
+        edges_zoom_raw    = self._canny_edges(zoom)
+        edges_zoom_clean  = self._remove_horizontal_artifacts(edges_zoom_raw)
         edges_zoom_bridged = self._bridge_gaps(edges_zoom_clean)
-        self._save(outdir, "edges.png", edges_zoom_clean)
-
-        comp_zoom = self._pick_graph_component(edges_zoom_bridged)
+        comp_zoom          = self._pick_graph_component(edges_zoom_bridged)
 
         try:
             y_zoom = self._trace_path(comp_zoom)
@@ -269,27 +234,18 @@ class ChartDirectionDetector:
 
         # -- 8. Direction detection ---------------------------------------
         trend_start, end_dir = self._find_last_direction_change(y_zoom)
-        direction = "UP" if end_dir > 0 else "DOWN"
-
-        # -- 9. Debug visuals for zoom ------------------------------------
-        if outdir:
-            traced = self._draw_trace(zoom, y_zoom, trend_start, len(y_zoom) - 1)
-            cv2.putText(traced, f"Direction: {direction}", (12, 30),
-                        cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 0, 255), 2, cv2.LINE_AA)
-            self._save(outdir, "traced.png", traced)
-
-            edges_bgr = cv2.cvtColor(edges_zoom_clean, cv2.COLOR_GRAY2BGR)
-            edges_traced = self._draw_trace(edges_bgr, y_zoom, trend_start, len(y_zoom) - 1)
-            cv2.putText(edges_traced, f"Direction: {direction}", (12, 30),
-                        cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 0, 255), 2, cv2.LINE_AA)
-            self._save(outdir, "edges_traced.png", edges_traced)
+        if end_dir > 0:
+            direction = "UP"
+        elif end_dir < 0:
+            direction = "DOWN"
+        else:
+            direction = "NONE"
 
         return {
             "success":       True,
             "direction":     direction,
             "end_dir":       end_dir,
             "trend_start_x": int(trend_start),
-            "roi":           roi,
         }
 
     # ------------------------------------------------------------------
@@ -302,11 +258,6 @@ class ChartDirectionDetector:
         if img is None:
             raise FileNotFoundError(f"Cannot read image: {path}")
         return img
-
-    @staticmethod
-    def _save(outdir: Optional[str], filename: str, img: np.ndarray) -> None:
-        if outdir:
-            cv2.imwrite(os.path.join(outdir, filename), img)
 
     @staticmethod
     def _clamp_roi(roi: _ROI, w: int, h: int) -> _ROI:
@@ -490,21 +441,6 @@ class ChartDirectionDetector:
                     break
         return int(last_hit)
 
-    @staticmethod
-    def _draw_trace(img_bgr: np.ndarray, y: np.ndarray, start_x: int, end_x: int) -> np.ndarray:
-        """Draw the traced polyline in red on a copy of img_bgr."""
-        out = img_bgr.copy()
-        h, w = out.shape[:2]
-        start_x = max(0, min(w - 2, start_x))
-        end_x   = max(start_x + 1, min(w - 1, end_x))
-        pts = np.array(
-            [(x, int(round(float(y[x])))) for x in range(start_x, end_x + 1)],
-            dtype=np.int32,
-        )
-        pts[:, 1] = np.clip(pts[:, 1], 0, h - 1)
-        cv2.polylines(out, [pts], False, (0, 0, 255), 2)
-        return out
-
     # ------------------------------------------------------------------
     # Private helpers - signal processing & direction
     # ------------------------------------------------------------------
@@ -556,9 +492,11 @@ class ChartDirectionDetector:
             if dirs[i] != 0:
                 end_dir = int(dirs[i])
                 break
-        # Fallback: compare tail vs near-tail means
+        # Fallback: compare smoothed tail vs near-tail when all points are flat
         if end_dir == 0:
-            end_dir = 1 if y_s[-1] < y_s[max(0, len(y_s) - 10)] else -1
+            tail_mean   = float(np.mean(y_s[-max(1, len(y_s) // 10):]))
+            before_mean = float(np.mean(y_s[max(0, len(y_s) // 2): max(1, len(y_s) * 9 // 10)]))
+            end_dir = 1 if tail_mean < before_mean else -1
 
         # -- find where that direction begins -----------------------------
         trend_start = 0
@@ -614,6 +552,10 @@ class ChartDirectionDetector:
         return self._clamp_roi(_ROI(x0, y0_full, x1, y1_full), W, H)
 
 
+# Backwards-compatible alias so existing imports keep working
+ChartLineDetector = ChartDirectionDetector
+
+
 # ---------------------------------------------------------------------------
 # Stand-alone usage
 # ---------------------------------------------------------------------------
@@ -623,11 +565,10 @@ if __name__ == "__main__":
 
     ap = argparse.ArgumentParser(description="Detect trend direction in a chart screenshot.")
     ap.add_argument("--image",  required=True,  help="Path to chart image")
-    ap.add_argument("--outdir", default=None,   help="Directory for debug output images")
     ap.add_argument("--last-w-frac-graph", type=float, default=0.28,
                     help="Fraction of graph width used as ROI (default 0.28)")
     ap.add_argument("--slope-threshold", type=float, default=0.15,
-                    help="Gradient threshold to classify UP/DOWN (default 0.15)")
+                    help="Gradient threshold to classify UP/DOWN/NONE (default 0.15)")
     args = ap.parse_args()
 
     detector = ChartDirectionDetector(
@@ -635,14 +576,10 @@ if __name__ == "__main__":
         slope_threshold=args.slope_threshold,
     )
 
-    result = detector.analyze_with_details(args.image, outdir=args.outdir)
+    result = detector.analyze_with_details(args.image)
 
     if result["success"]:
-        direction = result["direction"]
-        symbol = "UP" if direction == "UP" else "DOWN"
-        print(f"{symbol}  Direction: {direction}")
-        if args.outdir:
-            print(f"   Debug images saved to: {args.outdir}")
+        print(result["direction"])
     else:
         print(f"ERROR: {result['error']}", file=sys.stderr)
         sys.exit(1)

@@ -263,10 +263,10 @@ def upload_file():
             detector = ChartLineDetector()
             trend_direction = detector(filepath)
 
-            if trend_direction == "up":
+            if trend_direction == "UP":
                 result_text = "Trend: UP after last direction change"
                 result_class = "up"
-            elif trend_direction == "down":
+            elif trend_direction == "DOWN":
                 result_text = "Trend: DOWN after last direction change"
                 result_class = "down"
             else:

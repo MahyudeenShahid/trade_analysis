@@ -29,7 +29,7 @@ from config.settings import (
 )
 from db.migrations import init_db
 from ws.broadcaster import broadcaster_loop
-from api.routes import windows, capture, history, trades, bots, websocket
+from api.routes import windows, capture, history, trades, bots, websocket, chart
 
 
 # Create FastAPI application
@@ -127,6 +127,7 @@ app.include_router(history.router)
 app.include_router(trades.router)
 app.include_router(bots.router)
 app.include_router(websocket.router)
+app.include_router(chart.router)
 
 
 # ============================================================================
