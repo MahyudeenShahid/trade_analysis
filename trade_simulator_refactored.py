@@ -55,8 +55,8 @@ class TradeSimulator:
         """Ensure ticker state exists."""
         self.state_manager.get_or_create(key, ticker, bot_id, bot_name)
     
-    def _is_trading_hours(self) -> bool:
-        return self.core.is_trading_hours()
+    def _is_trading_hours(self, start_time=None, end_time=None, days=None) -> bool:
+        return self.core.is_trading_hours(start_time, end_time, days)
     
     def _buy(self, key: str, price: float):
         """Execute buy operation."""
@@ -90,6 +90,9 @@ class TradeSimulator:
                   rule_9_enabled: bool = False, rule_9_amount: Optional[float] = None, 
                   rule_9_flips: Optional[int] = None, 
                   rule_9_window_minutes: Optional[int] = None,
+                  rule_4_start_time: Optional[str] = None,
+                  rule_4_end_time: Optional[str] = None,
+                  rule_4_days=None,
                   bot_id: Optional[str] = None, bot_name: Optional[str] = None) -> Dict:
         """Handle signal for a given ticker."""
         ticker = self._normalize_ticker(ticker)
@@ -132,8 +135,8 @@ class TradeSimulator:
                 pass
         
         if auto:
-            # RULE #4: trade only during market hours
-            if rule_4_enabled and not self._is_trading_hours():
+            # RULE #4: trade only during market hours (optionally custom time/days)
+            if rule_4_enabled and not self._is_trading_hours(rule_4_start_time, rule_4_end_time, rule_4_days):
                 return self.summary()
             
             # RULE #5: 3-minute downtrend → reversal + scalp

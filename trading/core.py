@@ -92,26 +92,72 @@ class TradingCore:
             except Exception:
                 pass
     
-    def is_trading_hours(self) -> bool:
-        """Check if current time is within trading hours (Mon-Fri 9:30-16:00 ET)."""
-        from datetime import datetime
-        import pytz
-        
+    def is_trading_hours(self, start_time_str=None, end_time_str=None, allowed_days=None) -> bool:
+        """Check if current time is within trading hours.
+
+        Custom start/end times and allowed_days are compared against the SERVER's
+        local clock so the user's configured times are always honoured regardless
+        of timezone.  When no custom parameters are supplied the legacy behaviour
+        (Mon–Fri 9:30–16:00 ET) is preserved for backward compatibility.
+        """
+        from datetime import datetime, time as dt_time
+
         try:
-            et_tz = pytz.timezone('America/New_York')
-            now_et = datetime.now(et_tz)
-            weekday = now_et.weekday()
-            
-            # Monday = 0, Sunday = 6
-            if weekday >= 5:
+            using_custom = (start_time_str is not None or end_time_str is not None or allowed_days is not None)
+
+            if using_custom:
+                # Use the server's local time when the user has provided custom settings
+                now = datetime.now()
+            else:
+                # Legacy: use Eastern Time for the default market-hours check
+                try:
+                    import pytz
+                    et_tz = pytz.timezone('America/New_York')
+                    now = datetime.now(et_tz)
+                except Exception:
+                    now = datetime.now()
+
+            weekday = now.weekday()  # Monday=0, Sunday=6
+
+            # Resolve allowed days
+            if allowed_days is not None:
+                try:
+                    days = [int(d) for d in allowed_days]
+                except Exception:
+                    days = list(range(7))
+            elif using_custom:
+                # Custom time set but no explicit days → allow all days (time-only restriction)
+                days = list(range(7))
+            else:
+                # Legacy default ET market hours → Mon–Fri only
+                days = list(range(5))  # 0-4 = Mon-Fri
+
+            if weekday not in days:
                 return False
-            
-            current_time = now_et.time()
-            from datetime import time
-            start_time = time(9, 30)
-            end_time = time(16, 0)
-            
-            return start_time <= current_time <= end_time
+
+            current_time = now.time().replace(second=0, microsecond=0)
+
+            # Parse start time (default 09:30)
+            if start_time_str:
+                try:
+                    parts = str(start_time_str).split(':')
+                    start_t = dt_time(int(parts[0]), int(parts[1]) if len(parts) > 1 else 0)
+                except Exception:
+                    start_t = dt_time(9, 30)
+            else:
+                start_t = dt_time(9, 30)
+
+            # Parse end time (default 16:00)
+            if end_time_str:
+                try:
+                    parts = str(end_time_str).split(':')
+                    end_t = dt_time(int(parts[0]), int(parts[1]) if len(parts) > 1 else 0)
+                except Exception:
+                    end_t = dt_time(16, 0)
+            else:
+                end_t = dt_time(16, 0)
+
+            return start_t <= current_time <= end_t
         except Exception:
             return True
     
