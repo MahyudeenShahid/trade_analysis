@@ -14,6 +14,7 @@ class TradingCore:
                  on_trade_callback: Optional[Callable[[Dict], None]] = None):
         self.state_manager = state_manager
         self.trade_history: List[Dict] = []
+        self._send_cursor: int = 0  # tracks how many trades have been sent via WS delta
         self.on_trade_callback = on_trade_callback
     
     def buy(self, key: str, price: float, state: TickerState):
@@ -84,7 +85,14 @@ class TradingCore:
         }
         
         state.trade_history.append(trade)
+        # Cap per-ticker history to last 500 trades to prevent memory growth
+        if len(state.trade_history) > 500:
+            state.trade_history = state.trade_history[-500:]
+
         self.trade_history.append(trade)
+        # Cap global history to last 1000 trades to prevent memory growth
+        if len(self.trade_history) > 1000:
+            self.trade_history = self.trade_history[-1000:]
         
         if self.on_trade_callback:
             try:
@@ -192,7 +200,7 @@ class TradingCore:
                 "wins": wins,
                 "losses": losses,
                 "win_rate": round(win_rate, 2),
-                "trade_history": state.trade_history.copy()
+                # Omit full trade_history from WS payload — fetched via /history endpoint instead
             }
             
             bots_dict[bot_id] = bot_summary
@@ -203,9 +211,23 @@ class TradingCore:
             "tickers": summary_dict,
             "bots": bots_dict,
             "total_pnl_all_tickers": sum(t["total_pnl"] for t in bots_dict.values()),
-            "all_trades": self.trade_history.copy()
+            # Omit all_trades from WS payload to keep message size small.
+            # Trade history is available via the /history REST endpoint.
         }
     
+    def get_new_trades(self) -> List[Dict]:
+        """Return only the trades added since the last call (cursor-based delta).
+
+        This is used by the WebSocket broadcaster so that every message contains
+        ONLY the new trades instead of the full history, keeping payloads tiny.
+        The cursor advances automatically on each call so repeated calls return
+        non-overlapping slices.
+        """
+        cursor = self._send_cursor
+        new = self.trade_history[cursor:]
+        self._send_cursor = cursor + len(new)
+        return list(new)
+
     def clear_bot(self, bot_id: Optional[str], ticker: Optional[str] = None, 
                   state_key: str = None):
         """Clear specific bot's state and history."""
@@ -215,8 +237,11 @@ class TradingCore:
         if bot_id:
             self.trade_history = [t for t in self.trade_history 
                                 if t.get("bot_id") != bot_id]
+        # Rebase cursor so we don't re-send already-delivered trades
+        self._send_cursor = len(self.trade_history)
     
     def clear_all(self):
         """Clear all states and history."""
         self.state_manager.clear_all()
         self.trade_history.clear()
+        self._send_cursor = 0

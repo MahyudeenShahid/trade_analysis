@@ -161,10 +161,18 @@ async def broadcaster_loop():
                         pass
             except Exception:
                 pass
+            # Collect only NEW trades since last broadcast (delta — keeps payload tiny)
+            new_trades = []
+            try:
+                new_trades = trader.core.get_new_trades()
+            except Exception:
+                new_trades = []
+
             payload = {
                 'timestamp': datetime.utcnow().isoformat() + 'Z',
                 'workers': workers_payload,
                 'trade_summary': trader.summary(),
+                'new_trades': new_trades,
             }
 
             await manager.broadcast(json.dumps(payload))
