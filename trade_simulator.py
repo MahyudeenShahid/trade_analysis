@@ -93,6 +93,7 @@ class TradeSimulator:
                   rule_4_start_time: Optional[str] = None,
                   rule_4_end_time: Optional[str] = None,
                   rule_4_days=None,
+                  default_trade_enabled: bool = True,
                   bot_id: Optional[str] = None, bot_name: Optional[str] = None) -> Dict:
         """Handle signal for a given ticker."""
         ticker = self._normalize_ticker(ticker)
@@ -185,36 +186,17 @@ class TradeSimulator:
                 except Exception:
                     pass
             
-            # First cycle logic (first DOWN special)
-            state_dict = state.to_dict()
-            if not state_dict["first_cycle_done"]:
-                if trend == "down" and state.position is None:
-                    self._buy(state_key, price)
-                    state.waiting_for_second_down = True
-                    return self.summary()
-                
-                if trend == "up" and state_dict.get("waiting_for_second_down"):
-                    return self.summary()
-                
-                if trend == "down" and state_dict.get("waiting_for_second_down"):
-                    self._sell(state_key, price)
-                    state.first_cycle_done = True
-                    state.waiting_for_second_down = False
-                    return self.summary()
-                
-                # If first trend is UP → start normal mode
+            # Default: buy every rise, sell every fall (can be disabled per-bot)
+            if default_trade_enabled:
                 if trend == "up" and state.position is None:
-                    state.first_cycle_done = True
                     self._buy(state_key, price)
-                    return self.summary()
-            
-            # Normal mode
-            if trend == "up" and state.position is None:
-                self._buy(state_key, price)
-            elif trend == "down" and state.position is not None:
-                win_reason = "RULE_7" if state.rule7_active else None
-                self._sell(state_key, price, win_reason=win_reason)
-                state.rule7_active = False
+                elif trend == "down" and state.position is not None:
+                    win_reason = "RULE_7" if state.rule7_active else None
+                    self._sell(state_key, price, win_reason=win_reason)
+                    # Full Rule 7 reset so the 'active' flag is seen on the next tick
+                    state.rule7_active = False
+                    state.rule7_up_start = None
+                    state.rule7_ready_for_buy = False
         
         return self.summary()
     

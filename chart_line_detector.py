@@ -113,12 +113,12 @@ class ChartDirectionDetector:
         density_threshold: float = 0.18,
         band_half_height: int = 22,
         max_end_gap: int = 18,
-        slope_threshold: float = 0.03,
+        slope_threshold: float = 0.15,
         last_w_frac_graph: float = 0.28,
         full_y_margin_frac: float = 0.02,
         zoom_factor: float = 3.0,
-        smooth_win_trace: int = 9,
-        smooth_win_grad: int = 7,
+        smooth_win_trace: int = 15,
+        smooth_win_grad: int = 11,
     ):
         self.canny_low = canny_low
         self.canny_high = canny_high

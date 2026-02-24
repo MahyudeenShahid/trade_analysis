@@ -268,15 +268,11 @@ class BackgroundCaptureService:
                     # Save the image after quick OCR check to reduce blocking earlier
                     try:
                         img = img.convert('RGB')
-                        img.save(img_path, format='JPEG', quality=30, optimize=True)
+                        img.save(img_path, format='JPEG', quality=85, optimize=True)
                         print(f"Screenshot saved to: {img_path}")
                     except Exception:
                         pass
                     self.successful_captures += 1
-                    try:
-                        self.trade_recorder.register_capture(img_path, price_value)
-                    except Exception:
-                        pass
                     trend = None
                     ocr_ran = False
                     ocr_timed_out = False
@@ -307,6 +303,11 @@ class BackgroundCaptureService:
                             trend = self.line_detector(img_path)
                         except Exception as e:
                             print(f"Line detection failed for {img_path}: {e}")
+
+                    try:
+                        self.trade_recorder.register_capture(img_path, price_value)
+                    except Exception:
+                        pass
 
                     self.last_result = {
                         'timestamp': datetime.utcnow().isoformat() + 'Z',

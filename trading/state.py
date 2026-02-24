@@ -27,18 +27,24 @@ class TickerState:
         
         # Rule 5 state
         self.rule5_down_start: Optional[datetime] = None
-        self.rule5_active = False
+        self.rule5_ready_for_reversal: bool = False
+        self.rule5_reversal_active: bool = False
+        self.rule5_reversal_price: Optional[float] = None
+        self.rule5_scalp_active: bool = False
         
         # Rule 6 state
         self.rule6_down_start: Optional[datetime] = None
-        self.rule6_active = False
+        self.rule6_ready_for_buy: bool = False
+        self.rule6_active: bool = False
         
         # Rule 7 state
         self.rule7_up_start: Optional[datetime] = None
         self.rule7_active = False
+        self.rule7_ready_for_buy = False  # True once timer has elapsed, waiting to buy
         
         # Rule 9 state
         self.rule9_flips: List[Dict] = []
+        self.rule9_last_sell_time: Optional[datetime] = None  # cooldown start timestamp
     
     def to_dict(self) -> Dict:
         """Convert state to dictionary for serialization."""
@@ -55,12 +61,18 @@ class TickerState:
             "peak_price": self.peak_price,
             "drop_count": self.drop_count,
             "rule5_down_start": self.rule5_down_start,
-            "rule5_active": self.rule5_active,
+            "rule5_ready_for_reversal": self.rule5_ready_for_reversal,
+            "rule5_reversal_active": self.rule5_reversal_active,
+            "rule5_reversal_price": self.rule5_reversal_price,
+            "rule5_scalp_active": self.rule5_scalp_active,
             "rule6_down_start": self.rule6_down_start,
+            "rule6_ready_for_buy": self.rule6_ready_for_buy,
             "rule6_active": self.rule6_active,
             "rule7_up_start": self.rule7_up_start,
             "rule7_active": self.rule7_active,
-            "rule9_flips": self.rule9_flips.copy()
+            "rule7_ready_for_buy": self.rule7_ready_for_buy,
+            "rule9_flips": self.rule9_flips.copy(),
+            "rule9_last_sell_time": self.rule9_last_sell_time,
         }
     
     @classmethod
@@ -80,12 +92,18 @@ class TickerState:
         state.peak_price = data.get("peak_price")
         state.drop_count = data.get("drop_count", 0)
         state.rule5_down_start = data.get("rule5_down_start")
-        state.rule5_active = data.get("rule5_active", False)
+        state.rule5_ready_for_reversal = data.get("rule5_ready_for_reversal", False)
+        state.rule5_reversal_active = data.get("rule5_reversal_active", False)
+        state.rule5_reversal_price = data.get("rule5_reversal_price")
+        state.rule5_scalp_active = data.get("rule5_scalp_active", False)
         state.rule6_down_start = data.get("rule6_down_start")
+        state.rule6_ready_for_buy = data.get("rule6_ready_for_buy", False)
         state.rule6_active = data.get("rule6_active", False)
         state.rule7_up_start = data.get("rule7_up_start")
         state.rule7_active = data.get("rule7_active", False)
+        state.rule7_ready_for_buy = data.get("rule7_ready_for_buy", False)
         state.rule9_flips = data.get("rule9_flips", []).copy()
+        state.rule9_last_sell_time = data.get("rule9_last_sell_time")
         return state
 
 

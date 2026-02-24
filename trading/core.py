@@ -63,6 +63,8 @@ class TradingCore:
         state.last_price = None
         state.peak_price = None
         state.drop_count = 0
+        # Record sell time so Rule 9 cooldown can gate the next buy
+        state.rule9_last_sell_time = datetime.utcnow()
         
         self._log_trade(key, state, "sell", price, profit, win_reason, trade_id)
     

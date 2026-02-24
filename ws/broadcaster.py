@@ -120,6 +120,10 @@ async def broadcaster_loop():
                                     rule9_amount = bot.get('rule_9_amount')
                                     rule9_flips = bot.get('rule_9_flips')
                                     rule9_window = bot.get('rule_9_window_minutes')
+                                    default_trade = bot.get('default_trade_enabled', True)
+                                    if default_trade is None:
+                                        default_trade = True
+                                    default_trade = bool(default_trade)
                                     bot_id = bot.get('bot_id') or bot.get('id')
                                     bot_name = bot.get('name')
                                 except Exception:
@@ -128,7 +132,7 @@ async def broadcaster_loop():
                                 # Always call on_signal - Rule 1 now works alongside default logic
                                 try:
                                     before_count = len(trader.trade_history)
-                                    trader.on_signal(trend, price, ticker, auto=True, rule_1_enabled=rule_enabled, take_profit_amount=tp_amount, rule_2_enabled=rule2_enabled, stop_loss_amount=sl_amount, rule_3_enabled=rule3_enabled, rule_3_drop_count=rule3_drop, rule_4_enabled=rule4_enabled, rule_4_start_time=rule4_start, rule_4_end_time=rule4_end, rule_4_days=rule4_days, rule_5_enabled=rule5_enabled, rule_5_down_minutes=rule5_down, rule_5_reversal_amount=rule5_reversal, rule_5_scalp_amount=rule5_scalp, rule_6_enabled=rule6_enabled, rule_6_down_minutes=rule6_down, rule_6_profit_amount=rule6_profit, rule_7_enabled=rule7_enabled, rule_7_up_minutes=rule7_up, rule_8_enabled=rule8_enabled, rule_8_buy_offset=rule8_buy, rule_8_sell_offset=rule8_sell, rule_9_enabled=rule9_enabled, rule_9_amount=rule9_amount, rule_9_flips=rule9_flips, rule_9_window_minutes=rule9_window, bot_id=bot_id, bot_name=bot_name)
+                                    trader.on_signal(trend, price, ticker, auto=True, rule_1_enabled=rule_enabled, take_profit_amount=tp_amount, rule_2_enabled=rule2_enabled, stop_loss_amount=sl_amount, rule_3_enabled=rule3_enabled, rule_3_drop_count=rule3_drop, rule_4_enabled=rule4_enabled, rule_4_start_time=rule4_start, rule_4_end_time=rule4_end, rule_4_days=rule4_days, rule_5_enabled=rule5_enabled, rule_5_down_minutes=rule5_down, rule_5_reversal_amount=rule5_reversal, rule_5_scalp_amount=rule5_scalp, rule_6_enabled=rule6_enabled, rule_6_down_minutes=rule6_down, rule_6_profit_amount=rule6_profit, rule_7_enabled=rule7_enabled, rule_7_up_minutes=rule7_up, rule_8_enabled=rule8_enabled, rule_8_buy_offset=rule8_buy, rule_8_sell_offset=rule8_sell, rule_9_enabled=rule9_enabled, rule_9_amount=rule9_amount, rule_9_flips=rule9_flips, rule_9_window_minutes=rule9_window, default_trade_enabled=default_trade, bot_id=bot_id, bot_name=bot_name)
                                     after_count = len(trader.trade_history)
                                     if after_count > before_count and hasattr(svc, 'handle_trade_event'):
                                         try:

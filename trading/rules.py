@@ -113,7 +113,6 @@ def maybe_rule5_trade(state: 'TickerState', trend: str, current_price: float,
     2. On reversal, buy and wait for reversal_amount profit
     3. After reversal profit, enter scalp mode (quick trades)
     """
-    # Normalize parameters
     down_m = max(int(down_minutes) if down_minutes else 3, 1)
     rev_amt = max(float(reversal_amount) if reversal_amount else 2.0, 0.1)
     scalp_amt = max(float(scalp_amount) if scalp_amount else 0.25, 0.01)
@@ -121,51 +120,44 @@ def maybe_rule5_trade(state: 'TickerState', trend: str, current_price: float,
     now = datetime.utcnow()
     trend = (trend or '').lower()
 
-    # Check if in reversal trade (waiting for target)
-    if state.to_dict().get('rule5_reversal_active'):
-        data = state.to_dict()
-        rp = data.get('rule5_reversal_price')
-        if rp is not None and current_price >= (float(rp) + rev_amt):
+    # Stage 2: in reversal trade — waiting for profit target
+    if state.rule5_reversal_active:
+        if state.rule5_reversal_price is not None and current_price >= (state.rule5_reversal_price + rev_amt):
             sell_callback(current_price, win_reason="RULE_5")
-            data['rule5_reversal_active'] = False
-            data['rule5_reversal_price'] = None
-            data['rule5_scalp_active'] = True
-            return True
-        return True  # Block normal trading while waiting
+            state.rule5_reversal_active = False
+            state.rule5_reversal_price = None
+            state.rule5_scalp_active = True
+        return True  # block normal logic while waiting
 
-    # Check if in scalp mode
-    data = state.to_dict()
-    if data.get('rule5_scalp_active'):
+    # Stage 3: scalp mode — quick buy+sell on each up tick
+    if state.rule5_scalp_active:
         if trend != 'up':
-            data['rule5_scalp_active'] = False
+            state.rule5_scalp_active = False
         else:
-            # Execute quick scalp trades on each up tick
             if state.position is None:
-                buy_price = current_price - scalp_amt
-                sell_price = current_price + scalp_amt
-                buy_callback(buy_price)
-                sell_callback(sell_price, win_reason="RULE_5")
+                buy_callback(current_price)
+                sell_callback(current_price + scalp_amt, win_reason="RULE_5")
                 return True
             return True
 
-    # Track continuous downtrend duration
+    # Stage 1: track continuous downtrend duration
     if trend == 'down':
         if state.rule5_down_start is None:
             state.rule5_down_start = now
         else:
             elapsed = (now - state.rule5_down_start).total_seconds() / 60.0
             if elapsed >= down_m:
-                data['rule5_ready_for_reversal'] = True
+                state.rule5_ready_for_reversal = True
     else:
-        if not data.get('rule5_ready_for_reversal'):
+        if not state.rule5_ready_for_reversal:
             state.rule5_down_start = None
 
-    # Wait for uptrend to start reversal trade
-    if data.get('rule5_ready_for_reversal') and trend == 'up':
-        data['rule5_ready_for_reversal'] = False
+    # Trigger: first up tick after long downtrend
+    if state.rule5_ready_for_reversal and trend == 'up':
+        state.rule5_ready_for_reversal = False
         state.rule5_down_start = None
-        data['rule5_reversal_price'] = float(current_price)
-        data['rule5_reversal_active'] = True
+        state.rule5_reversal_price = float(current_price)
+        state.rule5_reversal_active = True
         if state.position is None:
             buy_callback(current_price)
         return True
@@ -185,15 +177,13 @@ def maybe_rule6_trade(state: 'TickerState', trend: str, current_price: float,
     now = datetime.utcnow()
     trend = (trend or '').lower()
 
-    # If active, sell when target reached
-    data = state.to_dict()
-    if data.get('rule6_active') and state.position is not None:
+    # Holding a Rule 6 position — wait for profit target
+    if state.rule6_active and state.position is not None:
         entry = state.position.get('entry')
         if entry is not None and current_price >= (float(entry) + prof_amt):
             sell_callback(current_price, win_reason="RULE_6")
-            data['rule6_active'] = False
-            return True
-        return True  # Block normal trading while waiting
+            state.rule6_active = False
+        return True  # block normal logic while waiting
 
     # Track continuous downtrend duration
     if trend == 'down':
@@ -202,18 +192,18 @@ def maybe_rule6_trade(state: 'TickerState', trend: str, current_price: float,
         else:
             elapsed = (now - state.rule6_down_start).total_seconds() / 60.0
             if elapsed >= down_m:
-                data['rule6_ready_for_buy'] = True
+                state.rule6_ready_for_buy = True
     else:
-        if not data.get('rule6_ready_for_buy'):
+        if not state.rule6_ready_for_buy:
             state.rule6_down_start = None
 
-    # When trend flips up and ready, buy and hold for profit target
-    if data.get('rule6_ready_for_buy') and trend == 'up':
-        data['rule6_ready_for_buy'] = False
+    # Trigger: first up tick after long downtrend
+    if state.rule6_ready_for_buy and trend == 'up':
+        state.rule6_ready_for_buy = False
         state.rule6_down_start = None
         if state.position is None:
             buy_callback(current_price)
-        data['rule6_active'] = True
+        state.rule6_active = True
         return True
 
     return False
@@ -222,41 +212,51 @@ def maybe_rule6_trade(state: 'TickerState', trend: str, current_price: float,
 def maybe_rule7_trade(state: 'TickerState', trend: str, current_price: float,
                      up_minutes: Optional[int], buy_callback) -> bool:
     """
-    Rule #7: Strong momentum buy after uptrend duration.
-    Buy after continuous uptrend for N minutes.
+    Rule #7: Buy after price has been continuously going UP for N seconds.
+    After a sell, the timer fully resets and must count N seconds again before next buy.
     """
-    up_m = max(int(up_minutes) if up_minutes else 3, 1)
+    # Treat the 'up_minutes' setting as seconds (UI will show 'sec' label)
+    up_s = max(int(up_minutes) if up_minutes else 30, 1)
 
     now = datetime.utcnow()
     trend = (trend or '').lower()
 
-    # If already in position via Rule #7, do not block normal logic
+    # Holding a Rule 7 position — let normal sell logic do the sell (return False so
+    # the default down=sell path runs), then we reset on next tick
     if state.rule7_active and state.position is not None:
         return False
 
-    # Track continuous uptrend duration
-    data = state.to_dict()
-    if trend == 'up':
-        if state.rule7_up_start is None:
-            state.rule7_up_start = now
-        else:
-            elapsed = (now - state.rule7_up_start).total_seconds() / 60.0
-            if elapsed >= up_m:
-                data['rule7_ready_for_buy'] = True
-    else:
-        if not data.get('rule7_ready_for_buy'):
-            state.rule7_up_start = None
-
-    # When ready and still trending up, buy
-    if data.get('rule7_ready_for_buy') and trend == 'up':
-        data['rule7_ready_for_buy'] = False
+    # Position was just sold — reset the whole cycle so timer starts fresh
+    if state.rule7_active and state.position is None:
+        state.rule7_active = False
         state.rule7_up_start = None
-        if state.position is None:
-            buy_callback(current_price)
+        state.rule7_ready_for_buy = False
+        return False
+
+    # Any DOWN tick breaks the streak — reset timer and ready flag
+    if trend != 'up':
+        state.rule7_up_start = None
+        state.rule7_ready_for_buy = False
+        return False
+
+    # Trending UP — start or continue the timer
+    if state.rule7_up_start is None:
+        state.rule7_up_start = now
+    else:
+        elapsed = (now - state.rule7_up_start).total_seconds()
+        if elapsed >= up_s:
+            state.rule7_ready_for_buy = True
+
+    # Timer has elapsed and no open position — BUY
+    if state.rule7_ready_for_buy and state.position is None:
+        state.rule7_ready_for_buy = False
+        state.rule7_up_start = None
+        buy_callback(current_price)
         state.rule7_active = True
         return True
 
-    return False
+    # Still counting up time — block normal logic so default buy doesn't fire early
+    return True
 
 
 def maybe_rule8_trade(state: 'TickerState', current_price: float,
@@ -269,17 +269,10 @@ def maybe_rule8_trade(state: 'TickerState', current_price: float,
     bo = float(buy_offset) if buy_offset is not None else 0.25
     so = float(sell_offset) if sell_offset is not None else 0.25
 
-    data = state.to_dict()
     if state.position is None:
-        buy_price = float(current_price) - bo
-        buy_callback(buy_price)
-        data['rule8_active'] = True
-        return True
-    
-    # If holding, sell using offset from current price
-    sell_price = float(current_price) + so
-    sell_callback(sell_price, win_reason="RULE_8")
-    data['rule8_active'] = False
+        buy_callback(float(current_price) - bo)
+    else:
+        sell_callback(float(current_price) + so, win_reason="RULE_8")
     return True
 
 
@@ -287,49 +280,20 @@ def maybe_rule9_trade(state: 'TickerState', trend: str, current_price: float,
                      amount: Optional[float], flips: Optional[int],
                      window_minutes: Optional[int], buy_callback, sell_callback) -> bool:
     """
-    Rule #9: Up/down flips (N cycles in M minutes) → quick scalp.
-    When sufficient trend flips detected within time window, execute scalp.
+    Rule #9: Cooldown gate — after a buy+sell cycle, block any new buy for N seconds.
+    'window_minutes' is reused as the cooldown duration in seconds (default 15).
+    Returns True (blocks normal logic) only during the cooldown window after a sell.
+    Returns False at all other times so normal buy/sell logic runs freely.
     """
-    amt = max(float(amount) if amount else 0.25, 0.01)
-    flips_needed = max(int(flips) if flips else 3, 1)
-    window_minutes_val = max(int(window_minutes) if window_minutes else 3, 1)
-    window_seconds = window_minutes_val * 60
-
+    cooldown_s = max(int(window_minutes) if window_minutes else 15, 1)
     now = datetime.utcnow()
-    trend = (trend or '').lower()
-    if trend not in ('up', 'down'):
-        return False
 
-    data = state.to_dict()
-    
-    # Reset window if expired or not started
-    if data.get('rule9_window_start') is None:
-        data['rule9_window_start'] = now
-        data['rule9_flip_count'] = 0
-        data['rule9_last_trend'] = trend
-    else:
-        elapsed = (now - data['rule9_window_start']).total_seconds()
-        if elapsed > window_seconds:
-            data['rule9_window_start'] = now
-            data['rule9_flip_count'] = 0
-            data['rule9_last_trend'] = trend
-
-    # Count flips
-    last_trend = data.get('rule9_last_trend')
-    if last_trend and trend != last_trend:
-        data['rule9_flip_count'] = int(data.get('rule9_flip_count', 0)) + 1
-        data['rule9_last_trend'] = trend
-
-    # When threshold reached, execute quick scalp
-    if int(data.get('rule9_flip_count', 0)) >= flips_needed:
-        data['rule9_window_start'] = None
-        data['rule9_flip_count'] = 0
-        data['rule9_last_trend'] = None
-        if state.position is None:
-            buy_price = float(current_price) - amt
-            sell_price = buy_price + amt
-            buy_callback(buy_price)
-            sell_callback(sell_price, win_reason="RULE_9")
+    # Only apply gate when flat (no open position) and a sell has happened before
+    if state.position is None and state.rule9_last_sell_time is not None:
+        elapsed = (now - state.rule9_last_sell_time).total_seconds()
+        if elapsed < cooldown_s:
+            # Still in cooldown — block any buy
             return True
-    
+
+    # In position or cooldown expired — don't interfere, let normal logic run
     return False
