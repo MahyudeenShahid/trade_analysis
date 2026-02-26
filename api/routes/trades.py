@@ -76,4 +76,34 @@ def api_manual_trade(trade: dict, _auth: bool = Depends(require_api_key)):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.post("/close_all_positions")
+def api_close_all_positions(_auth: bool = Depends(require_api_key)):
+    """
+    Force-close every open position in the simulator and mark each as INCOMPLETE.
+
+    Called before disconnection so that open trades are not left dangling in the
+    database without a corresponding sell record.
+
+    Returns:
+        dict: Number of positions that were closed.
+    """
+    try:
+        closed = 0
+        all_states = trader.state_manager.all_states()
+        for key, state in list(all_states.items()):
+            if state.position is not None:
+                try:
+                    entry_price = state.position.get("entry")
+                    # Use entry_price as sell price so profit = 0; this keeps the
+                    # DB record consistent (buy_price == sell_price = entry).
+                    sell_price = entry_price if entry_price is not None else 0.0
+                    trader.core.sell(key, sell_price, state, win_reason="INCOMPLETE")
+                    closed += 1
+                except Exception:
+                    pass
+        return {"closed": closed}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 __all__ = ["router"]
