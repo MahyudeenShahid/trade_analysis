@@ -340,6 +340,7 @@ def api_history(
     end_ts: Optional[str] = None,
     trend: Optional[str] = None,
     limit: Optional[int] = None,
+    offset: int = 0,
 ):
     """
     Get historical records with optional filtering.
@@ -385,15 +386,19 @@ def api_history(
         params.append(trend)
 
     where = " AND ".join(clauses) if clauses else "1=1"
-    # If `limit` is provided, apply LIMIT clause. Otherwise return all
-    # matching records (e.g. all trades from the last `days`). This
-    # ensures the API can return all trades for the last 7 days when
-    # the caller doesn't specify a limit.
+
+    # Count total matching records (for pagination metadata)
+    count_rows = query_records(f"SELECT COUNT(*) as count FROM records WHERE {where}", tuple(params))
+    total_count = count_rows[0]['count'] if count_rows else 0
+
+    # If `limit` is provided, apply LIMIT + OFFSET clause for pagination.
+    # Otherwise return all matching records (e.g. all trades from the last `days`).
     if limit is None:
         sql = f"SELECT * FROM records WHERE {where} ORDER BY ts DESC"
     else:
-        sql = f"SELECT * FROM records WHERE {where} ORDER BY ts DESC LIMIT ?"
+        sql = f"SELECT * FROM records WHERE {where} ORDER BY ts DESC LIMIT ? OFFSET ?"
         params.append(int(limit))
+        params.append(int(offset))
 
     rows = query_records(sql, tuple(params))
     for r in rows:
@@ -409,7 +414,7 @@ def api_history(
             print(f"[History API] Error collecting screenshots: {e}")
             r["trade_id"] = _extract_trade_id(r)
             r["screenshots"] = []
-    return rows
+    return JSONResponse(content=rows, headers={"X-Total-Count": str(total_count)})
 
 
 @router.get("/uploads/{filename:path}")
@@ -427,6 +432,21 @@ def api_uploads(filename: str):
     if not os.path.exists(path):
         return JSONResponse(status_code=404, content={"detail": "file not found"})
     return FileResponse(path)
+
+
+@router.get("/screenshots")
+def api_trade_screenshots_for_trade(trade_id: Optional[str] = None):
+    """
+    Return the list of screenshot objects for a specific trade.
+    Accepts trade_id (ISO timestamp) and finds the matching trade folder.
+    Used by the frontend to lazy-load screenshots for WS-delivered trade records.
+    """
+    if not trade_id:
+        return JSONResponse(status_code=400, content={"detail": "trade_id required"})
+    # Build a minimal record dict that _collect_trade_screenshots can work with
+    mock_record = {"trade_id": trade_id, "ts": trade_id}
+    shots = _collect_trade_screenshots(mock_record)
+    return {"trade_id": trade_id, "screenshots": shots}
 
 
 @router.get("/trade_screenshots/{filename:path}")

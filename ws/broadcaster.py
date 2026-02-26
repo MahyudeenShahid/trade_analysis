@@ -139,7 +139,19 @@ async def broadcaster_loop():
                                             for ev in trader.trade_history[before_count:after_count]:
                                                 if bot_id and ev.get('bot_id') != bot_id:
                                                     continue
-                                                svc.handle_trade_event(ev.get('direction'), ev.get('ticker'), ev.get('trade_id') or ev.get('ts'), ev.get('price'))
+                                                direction = ev.get('direction')
+                                                svc.handle_trade_event(direction, ev.get('ticker'), ev.get('trade_id') or ev.get('ts'), ev.get('price'))
+                                                # After a sell, the trade folder is complete — attach all
+                                                # captured screenshots directly onto the trade record so
+                                                # the frontend receives them in the same WS message.
+                                                if direction == 'sell':
+                                                    try:
+                                                        if hasattr(svc, 'trade_recorder'):
+                                                            shots = svc.trade_recorder.get_last_screenshots()
+                                                            if shots:
+                                                                ev['screenshots'] = shots
+                                                    except Exception:
+                                                        pass
                                         except Exception:
                                             pass
                                 except Exception:
@@ -160,7 +172,15 @@ async def broadcaster_loop():
                     # Keep only the most recent screenshot per-worker to save disk
                     try:
                         if hasattr(svc, 'capture') and hasattr(svc.capture, 'clear_screenshots'):
-                            svc.capture.clear_screenshots(keep_last_n=1)
+                            # Keep enough frames to fill the trade recorder pre-buffer
+                            # (pre_count frames before trade + 1 current). If we only
+                            # kept 1, pre-trade screenshots would be deleted before
+                            # start_trade() could copy them into the trade folder.
+                            try:
+                                pre_count = svc.trade_recorder.pre_count if hasattr(svc, 'trade_recorder') else 5
+                            except Exception:
+                                pre_count = 5
+                            svc.capture.clear_screenshots(keep_last_n=pre_count + 1)
                     except Exception:
                         pass
             except Exception:

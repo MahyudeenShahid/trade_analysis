@@ -64,6 +64,8 @@ class BackgroundCaptureService:
         # Trade screenshot capture
         self.trade_screens_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "trade_screenshots")
         self.trade_recorder = TradeScreenshotRecorder(self.trade_screens_dir, pre_count=5, post_count=5)
+        # Daily CSV rotation tracking
+        self._csv_date: str = ''
     
     def set_target_window(self, hwnd):
         """
@@ -210,12 +212,13 @@ class BackgroundCaptureService:
                 except Exception:
                     pass
 
-                # Debug: print target window info
-                try:
-                    win_info = self.selector.get_window_by_handle(self.target_hwnd)
-                    print(f"[BackgroundCapture] Capturing window: {win_info['title']} (hwnd={self.target_hwnd})")
-                except Exception as e:
-                    print(f"[BackgroundCapture] Could not get window info: {e}")
+                # Throttled status print — once every 60 captures (~5 min at 5s interval)
+                if self.total_captures % 60 == 0:
+                    try:
+                        win_info = self.selector.get_window_by_handle(self.target_hwnd)
+                        print(f"[BackgroundCapture] Still running — {self.total_captures} captures, window: {win_info['title']} (hwnd={self.target_hwnd})")
+                    except Exception:
+                        pass
                 
                 # Capture screenshot (do not save immediately to reduce IO latency)
                 timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:-3]
@@ -224,43 +227,65 @@ class BackgroundCaptureService:
                 img = self.capture.capture_window(self.target_hwnd)
 
                 # If we didn't get an image, try a direct array capture
-                if img is None:
-                    print("BackgroundCaptureService: initial capture returned None, trying array capture...")
-                    arr = self.capture.capture_window_to_array(self.target_hwnd)
-                    if arr is not None:
-                        import cv2 as _cv2
-                        try:
-                            _cv2.imwrite(img_path, arr, [int(_cv2.IMWRITE_JPEG_QUALITY), 30])
-                            from PIL import Image as _I
-                            img = _I.fromarray(arr[:, :, ::-1])
-                        except Exception as e:
-                            print(f"BackgroundCaptureService: failed to write array capture: {e}")
-                    else:
-                        print("BackgroundCaptureService: array capture returned None.")
-
-                # If the saved image is unexpectedly small, attempt array-capture fallback to overwrite
-                def _pil_img_too_small(pil_img):
+                # --- Helpers for image quality checks ---
+                def _img_too_small(pil_img):
                     try:
                         w, h = pil_img.size
-                        return h < 64
+                        return h < 64 or w < 64
                     except Exception:
                         return True
 
-                if img is not None and _pil_img_too_small(img):
-                    print("BackgroundCaptureService: captured image too small, attempting array-capture fallback...")
+                def _img_mostly_black(pil_img, threshold=0.92):
+                    """Return True when > threshold fraction of pixels are pure black.
+                    PrintWindow silently returns an all-black bitmap for GPU-accelerated
+                    or minimized windows — this catches those silent failures."""
                     try:
-                        arr = self.capture.capture_window_to_array(self.target_hwnd)
+                        import numpy as _np
+                        arr = _np.array(pil_img.convert('RGB'))
+                        black_pixels = _np.all(arr == 0, axis=2).sum()
+                        total = arr.shape[0] * arr.shape[1]
+                        return total > 0 and (black_pixels / total) >= threshold
+                    except Exception:
+                        return False
+
+                def _try_array_fallback(hwnd, out_path):
+                    """Attempt capture via capture_window_to_array and return PIL image or None."""
+                    try:
+                        arr = self.capture.capture_window_to_array(hwnd)
                         if arr is not None:
                             import cv2 as _cv2
-                            _cv2.imwrite(img_path, arr, [int(_cv2.IMWRITE_JPEG_QUALITY), 30])
                             from PIL import Image as _I
-                            img = _I.fromarray(arr[:, :, ::-1])
-                            if _pil_img_too_small(img):
-                                print("BackgroundCaptureService: fallback array capture still small or invalid image.")
-                        else:
-                            print("BackgroundCaptureService: array capture returned None.")
+                            _cv2.imwrite(out_path, arr, [int(_cv2.IMWRITE_JPEG_QUALITY), 85])
+                            return _I.fromarray(arr[:, :, ::-1])
                     except Exception as e:
                         print(f"BackgroundCaptureService: array-capture fallback failed: {e}")
+                    return None
+
+                # Primary capture failed entirely
+                if img is None:
+                    print("BackgroundCaptureService: initial capture returned None, trying array capture...")
+                    img = _try_array_fallback(self.target_hwnd, img_path)
+                    if img is None:
+                        print("BackgroundCaptureService: array capture also returned None.")
+
+                # Image captured but too small — try fallback
+                if img is not None and _img_too_small(img):
+                    print("BackgroundCaptureService: captured image too small, attempting array-capture fallback...")
+                    fallback = _try_array_fallback(self.target_hwnd, img_path)
+                    if fallback is not None and not _img_too_small(fallback):
+                        img = fallback
+                    else:
+                        print("BackgroundCaptureService: fallback still small or invalid.")
+
+                # Image is all black — PrintWindow returned a blank bitmap (GPU/minimized window)
+                if img is not None and _img_mostly_black(img):
+                    print("BackgroundCaptureService: captured image is mostly black (GPU/minimized window), trying array fallback...")
+                    fallback = _try_array_fallback(self.target_hwnd, img_path)
+                    if fallback is not None and not _img_mostly_black(fallback):
+                        img = fallback
+                    else:
+                        print("BackgroundCaptureService: fallback also black — skipping this capture tick.")
+                        img = None
                 
                 self.total_captures += 1
 
@@ -269,7 +294,6 @@ class BackgroundCaptureService:
                     try:
                         img = img.convert('RGB')
                         img.save(img_path, format='JPEG', quality=85, optimize=True)
-                        print(f"Screenshot saved to: {img_path}")
                     except Exception:
                         pass
                     self.successful_captures += 1
@@ -321,7 +345,25 @@ class BackgroundCaptureService:
                         'ocr_timed_out': bool(ocr_timed_out)
                     }
 
-                    unified_csv = os.path.join(self.capture.output_folder, 'results.csv')
+                    today = datetime.utcnow().strftime('%Y%m%d')
+                    # Rotate CSV daily — prevents unbounded growth in long sessions
+                    if today != self._csv_date:
+                        self._csv_date = today
+                        # Delete CSV files older than 3 days to free disk space
+                        try:
+                            import glob as _glob
+                            from datetime import timedelta as _td
+                            cutoff = (datetime.utcnow() - _td(days=3)).strftime('%Y%m%d')
+                            for old in _glob.glob(os.path.join(self.capture.output_folder, 'results_*.csv')):
+                                day_str = os.path.basename(old).replace('results_', '').replace('.csv', '')
+                                if day_str.isdigit() and day_str < cutoff:
+                                    try:
+                                        os.remove(old)
+                                    except Exception:
+                                        pass
+                        except Exception:
+                            pass
+                    unified_csv = os.path.join(self.capture.output_folder, f'results_{today}.csv')
                     header_needed = not os.path.exists(unified_csv)
                     try:
                         with open(unified_csv, 'a', newline='', encoding='utf-8') as f:

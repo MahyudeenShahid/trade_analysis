@@ -83,10 +83,25 @@ class ScreenshotCapture:
                 except Exception as e:
                     print(f"[ScreenshotCapture] Could not bring window to foreground: {e}")
             
+            # Restore window if minimized — GetWindowRect on a minimized window
+            # returns (-32000, -32000, ...) which produces garbage captures.
+            try:
+                import win32con as _wc
+                if win32gui.IsIconic(hwnd):
+                    win32gui.ShowWindow(hwnd, _wc.SW_RESTORE)
+                    time.sleep(0.15)
+            except Exception:
+                pass
+
             # Get window dimensions
             left, top, right, bottom = win32gui.GetWindowRect(hwnd)
             width = right - left
             height = bottom - top
+
+            # Reject obviously bad coordinates (minimized ghost position is -32000)
+            if left < -1000 or top < -1000:
+                print(f"[ScreenshotCapture] Window appears to be minimized or off-screen ({left},{top}), skipping.")
+                return None
             
             # Check if window has valid dimensions
             if width <= 0 or height <= 0:
@@ -213,7 +228,7 @@ class ScreenshotCapture:
                 try:
                     if save_path.lower().endswith(('.jpg', '.jpeg')):
                         img = img.convert('RGB')
-                        img.save(save_path, format='JPEG', quality=30, optimize=True)
+                        img.save(save_path, format='JPEG', quality=85, optimize=True)
                     else:
                         img.save(save_path)
                     print(f"Screenshot saved to: {save_path}")

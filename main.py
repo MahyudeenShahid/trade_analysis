@@ -70,6 +70,7 @@ if DEV_ALLOW_ALL_CORS:
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
+        expose_headers=["X-Total-Count"],
     )
 else:
     app.add_middleware(
@@ -78,6 +79,7 @@ else:
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
+        expose_headers=["X-Total-Count"],
     )
 
 

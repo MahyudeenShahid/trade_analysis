@@ -263,17 +263,32 @@ def maybe_rule8_trade(state: 'TickerState', current_price: float,
                      buy_offset: Optional[float], sell_offset: Optional[float],
                      buy_callback, sell_callback) -> bool:
     """
-    Rule #8: Always place offset buy/sell.
-    Buy at current - offset, sell at current + offset.
+    Rule #8: Limit-order style offset trading.
+    - While flat: tracks a rolling peak price. Buys only when price drops
+      buy_offset below that peak (i.e. waits for a pullback).
+    - While in position: sells only when price rises sell_offset above entry.
+    Always returns True to block default buy/sell logic while Rule 8 is active.
     """
     bo = float(buy_offset) if buy_offset is not None else 0.25
     so = float(sell_offset) if sell_offset is not None else 0.25
 
     if state.position is None:
-        buy_callback(float(current_price) - bo)
+        # Track the rolling peak upward as price rises
+        if state.rule8_watch_price is None or current_price > state.rule8_watch_price:
+            state.rule8_watch_price = current_price
+
+        # Only buy once price has pulled back buy_offset below the peak
+        if current_price <= state.rule8_watch_price - bo:
+            buy_callback(current_price)
+            state.rule8_watch_price = None  # reset so it re-tracks after buying
     else:
-        sell_callback(float(current_price) + so, win_reason="RULE_8")
-    return True
+        # In position — wait until price rises sell_offset above entry
+        entry = state.position.get('entry')
+        if entry is not None and current_price >= float(entry) + so:
+            sell_callback(current_price, win_reason="RULE_8")
+            state.rule8_watch_price = None
+
+    return True  # always block default logic when Rule 8 is enabled
 
 
 def maybe_rule9_trade(state: 'TickerState', trend: str, current_price: float,

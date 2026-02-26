@@ -53,6 +53,28 @@ def api_start_multi(
     return {"started": True, "hwnd": int(hwnd)}
 
 
+@router.post("/set_capture_interval")
+def api_set_capture_interval(hwnd: int = None, interval: float = 1.0):
+    """
+    Change the capture interval (in seconds) for a running worker.
+
+    Args:
+        hwnd: Window handle of the running worker
+        interval: New capture interval in seconds (minimum 0.5)
+
+    Returns:
+        dict: Confirmed hwnd and interval
+    """
+    if hwnd is None:
+        raise HTTPException(status_code=400, detail="hwnd is required")
+    svc = manager_services.get_worker(int(hwnd))
+    if not svc:
+        raise HTTPException(status_code=404, detail="Worker not found")
+    applied = max(0.5, float(interval))
+    svc.set_interval(applied)
+    return {"hwnd": int(hwnd), "interval": applied}
+
+
 @router.post("/stop_multi")
 def api_stop_multi(hwnd: int = None):
     """

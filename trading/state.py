@@ -42,6 +42,9 @@ class TickerState:
         self.rule7_active = False
         self.rule7_ready_for_buy = False  # True once timer has elapsed, waiting to buy
         
+        # Rule 8 state
+        self.rule8_watch_price: Optional[float] = None  # rolling peak while waiting to buy
+
         # Rule 9 state
         self.rule9_flips: List[Dict] = []
         self.rule9_last_sell_time: Optional[datetime] = None  # cooldown start timestamp
@@ -71,6 +74,7 @@ class TickerState:
             "rule7_up_start": self.rule7_up_start,
             "rule7_active": self.rule7_active,
             "rule7_ready_for_buy": self.rule7_ready_for_buy,
+            "rule8_watch_price": self.rule8_watch_price,
             "rule9_flips": self.rule9_flips.copy(),
             "rule9_last_sell_time": self.rule9_last_sell_time,
         }
@@ -102,6 +106,7 @@ class TickerState:
         state.rule7_up_start = data.get("rule7_up_start")
         state.rule7_active = data.get("rule7_active", False)
         state.rule7_ready_for_buy = data.get("rule7_ready_for_buy", False)
+        state.rule8_watch_price = data.get("rule8_watch_price")
         state.rule9_flips = data.get("rule9_flips", []).copy()
         state.rule9_last_sell_time = data.get("rule9_last_sell_time")
         return state
