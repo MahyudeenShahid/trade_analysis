@@ -166,5 +166,15 @@ def init_db():
     conn.close()
     os.makedirs(UPLOADS_DIR, exist_ok=True)
 
+    # Enable WAL mode and create indexes in a separate connection
+    # (PRAGMA journal_mode must be done outside a transaction)
+    conn2 = sqlite3.connect(DB_PATH)
+    conn2.execute("PRAGMA journal_mode=WAL")
+    conn2.execute("CREATE INDEX IF NOT EXISTS idx_records_ts ON records(ts DESC)")
+    conn2.execute("CREATE INDEX IF NOT EXISTS idx_records_ts_bot ON records(ts DESC, bot_id)")
+    conn2.execute("CREATE INDEX IF NOT EXISTS idx_records_ticker ON records(ticker)")
+    conn2.commit()
+    conn2.close()
+
 
 __all__ = ["init_db"]

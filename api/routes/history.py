@@ -12,7 +12,7 @@ from fastapi.responses import FileResponse, JSONResponse
 
 from api.dependencies import require_api_key
 from config.settings import UPLOADS_DIR
-from db.queries import query_records, get_latest_record, save_observation
+from db.queries import query_records, get_latest_record, save_observation, query_history_page
 from services.bot_registry import list_bots_by_hwnd
 from trading.simulator import trader
 
@@ -21,6 +21,10 @@ router = APIRouter(prefix="", tags=["history"])
 TRADE_SCREENSHOTS_DIR = os.path.abspath(
     os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "trade_screenshots")
 )
+
+# Cache: trade_id candidate string → absolute directory path (or None).
+# Populated lazily; cleared when the process restarts.
+_trade_dir_cache: dict = {}
 
 
 def _parse_iso(ts: Optional[str]):
@@ -99,33 +103,37 @@ def _collect_trade_screenshots(record: dict) -> List[dict]:
 
     day = _trade_day(record)
 
-    search_roots = []
-    if day:
-        search_roots.append(os.path.join(TRADE_SCREENSHOTS_DIR, day))
-    search_roots.append(TRADE_SCREENSHOTS_DIR)
+    # Check cache first — avoids os.walk on repeat calls for the same trade
+    cache_key = candidates[0]
+    if cache_key in _trade_dir_cache:
+        target_dir = _trade_dir_cache[cache_key]
+    else:
+        search_roots = []
+        if day:
+            search_roots.append(os.path.join(TRADE_SCREENSHOTS_DIR, day))
+        search_roots.append(TRADE_SCREENSHOTS_DIR)
 
-    target_dir = None
-    for root in search_roots:
-        if not os.path.exists(root):
-            continue
-        for dirpath, dirnames, _ in os.walk(root):
-            base = os.path.basename(dirpath)
-            if not base.startswith("trade_"):
+        target_dir = None
+        for root in search_roots:
+            if not os.path.exists(root):
                 continue
-            for cand in candidates:
-                if base == f"trade_{cand}":
-                    target_dir = dirpath
+            for dirpath, dirnames, _ in os.walk(root):
+                base = os.path.basename(dirpath)
+                if not base.startswith("trade_"):
+                    continue
+                for cand in candidates:
+                    if base == f"trade_{cand}":
+                        target_dir = dirpath
+                        break
+                if target_dir:
                     break
             if target_dir:
                 break
-        if target_dir:
-            break
+        _trade_dir_cache[cache_key] = target_dir  # cache miss or None
 
     if not target_dir:
-        print(f"[_collect_trade_screenshots] No target directory found for candidates: {candidates}")
         return []
     
-    print(f"[_collect_trade_screenshots] Found target directory: {target_dir}")
 
     # Try to load metadata.json if it exists
     metadata_file = os.path.join(target_dir, 'metadata.json')
@@ -388,20 +396,13 @@ def api_history(
 
     where = " AND ".join(clauses) if clauses else "1=1"
 
-    # Count total matching records (for pagination metadata)
-    count_rows = query_records(f"SELECT COUNT(*) as count FROM records WHERE {where}", tuple(params))
-    total_count = count_rows[0]['count'] if count_rows else 0
-
-    # If `limit` is provided, apply LIMIT + OFFSET clause for pagination.
-    # Otherwise return all matching records (e.g. all trades from the last `days`).
+    # COUNT + paginated SELECT in one connection
     if limit is None:
-        sql = f"SELECT * FROM records WHERE {where} ORDER BY ts DESC"
+        count_rows = query_records(f"SELECT COUNT(*) as count FROM records WHERE {where}", tuple(params))
+        total_count = count_rows[0]['count'] if count_rows else 0
+        rows = query_records(f"SELECT * FROM records WHERE {where} ORDER BY ts DESC", tuple(params))
     else:
-        sql = f"SELECT * FROM records WHERE {where} ORDER BY ts DESC LIMIT ? OFFSET ?"
-        params.append(int(limit))
-        params.append(int(offset))
-
-    rows = query_records(sql, tuple(params))
+        total_count, rows = query_history_page(where, tuple(params), int(limit), int(offset))
     for r in rows:
         if r.get("image_path"):
             r["image_url"] = "/uploads/" + os.path.basename(r["image_path"])
@@ -409,8 +410,6 @@ def api_history(
             r["trade_id"] = _extract_trade_id(r)
             if screenshots:
                 r["screenshots"] = _collect_trade_screenshots(r)
-                if r["screenshots"]:
-                    print(f"[History API] Found {len(r['screenshots'])} screenshots for {r.get('ticker', 'unknown')}")
             else:
                 r["screenshots"] = []
         except Exception as e:
