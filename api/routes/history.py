@@ -341,6 +341,7 @@ def api_history(
     trend: Optional[str] = None,
     limit: Optional[int] = None,
     offset: int = 0,
+    screenshots: bool = False,
 ):
     """
     Get historical records with optional filtering.
@@ -406,12 +407,14 @@ def api_history(
             r["image_url"] = "/uploads/" + os.path.basename(r["image_path"])
         try:
             r["trade_id"] = _extract_trade_id(r)
-            r["screenshots"] = _collect_trade_screenshots(r)
-            # Debug logging
-            if r["screenshots"]:
-                print(f"[History API] Found {len(r['screenshots'])} screenshots for {r.get('ticker', 'unknown')}")
+            if screenshots:
+                r["screenshots"] = _collect_trade_screenshots(r)
+                if r["screenshots"]:
+                    print(f"[History API] Found {len(r['screenshots'])} screenshots for {r.get('ticker', 'unknown')}")
+            else:
+                r["screenshots"] = []
         except Exception as e:
-            print(f"[History API] Error collecting screenshots: {e}")
+            print(f"[History API] Error processing record: {e}")
             r["trade_id"] = _extract_trade_id(r)
             r["screenshots"] = []
     return JSONResponse(content=rows, headers={"X-Total-Count": str(total_count)})
