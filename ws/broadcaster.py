@@ -95,6 +95,7 @@ async def broadcaster_loop():
                             rule9_window = None
                             for bot in bot_list:
                                 try:
+                                    trading_paused = bool(bot.get('trading_paused'))
                                     rule_enabled = bool(bot.get('rule_1_enabled'))
                                     rule2_enabled = bool(bot.get('rule_2_enabled'))
                                     rule3_enabled = bool(bot.get('rule_3_enabled'))
@@ -128,6 +129,9 @@ async def broadcaster_loop():
                                     bot_id = bot.get('bot_id') or bot.get('id')
                                     bot_name = bot.get('name')
                                 except Exception:
+                                    continue
+
+                                if trading_paused:
                                     continue
 
                                 # Always call on_signal - Rule 1 now works alongside default logic
