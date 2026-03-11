@@ -124,6 +124,19 @@ def init_db():
         """
     )
 
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS app_settings (
+            key TEXT PRIMARY KEY,
+            value TEXT
+        )
+        """
+    )
+    cur.execute(
+        "INSERT OR IGNORE INTO app_settings (key, value) VALUES (?, ?)",
+        ("time_mode", "local"),
+    )
+
     # Migration: ensure new columns exist in bots
     try:
         cur.execute("PRAGMA table_info(bots)")

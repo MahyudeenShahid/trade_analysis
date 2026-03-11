@@ -14,6 +14,7 @@ from screenshot_capture import ScreenshotCapture
 from window_selector import WindowSelector
 from title_extractor import extract_from_title
 from services.trade_recorder import TradeScreenshotRecorder
+from config.time_utils import capture_filename_timestamp, current_timestamp
 
 
 class BackgroundCaptureService:
@@ -218,7 +219,7 @@ class BackgroundCaptureService:
                     print(f"[BackgroundCapture] Could not get window info: {e}")
                 
                 # Capture screenshot (do not save immediately to reduce IO latency)
-                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:-3]
+                timestamp = capture_filename_timestamp()
                 filename = f"capture_{timestamp}.jpg"
                 img_path = os.path.join(self.capture.output_folder, filename)
                 img = self.capture.capture_window(self.target_hwnd)
@@ -310,7 +311,7 @@ class BackgroundCaptureService:
                         pass
 
                     self.last_result = {
-                        'timestamp': datetime.utcnow().isoformat() + 'Z',
+                        'timestamp': current_timestamp(),
                         'image_path': img_path,
                         'name': name,
                         'ticker': ticker,

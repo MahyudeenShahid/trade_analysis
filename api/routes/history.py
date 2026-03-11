@@ -4,7 +4,7 @@ import json
 import os
 import shutil
 import uuid
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import List, Optional
 
 from fastapi import APIRouter, UploadFile, File, Form, Depends, HTTPException
@@ -12,6 +12,14 @@ from fastapi.responses import FileResponse, JSONResponse
 
 from api.dependencies import require_api_key
 from config.settings import UPLOADS_DIR
+from config.time_utils import (
+    capture_filename_timestamp,
+    day_bounds_utc,
+    get_time_mode,
+    history_day_key,
+    recent_days_start_ts,
+    screenshot_day_key,
+)
 from db.queries import query_records, get_latest_record, save_observation, query_history_page
 from services.bot_registry import list_bots_by_hwnd
 from trading.simulator import trader
@@ -67,12 +75,10 @@ def _extract_trade_id(record: dict) -> Optional[str]:
 
 def _trade_day(record: dict) -> Optional[str]:
     trade_id = _extract_trade_id(record)
-    dt = _parse_iso(trade_id)
-    if not dt:
-        dt = _parse_iso(record.get("ts"))
-    if not dt:
-        return None
-    return dt.strftime("%Y%m%d")
+    day = screenshot_day_key(trade_id)
+    if day:
+        return day
+    return screenshot_day_key(record.get("ts"))
 
 
 def _safe_join(base_dir: str, rel_path: str) -> Optional[str]:
@@ -81,6 +87,175 @@ def _safe_join(base_dir: str, rel_path: str) -> Optional[str]:
     if not target.startswith(base):
         return None
     return target
+
+
+def _find_trade_record(trade_id: Optional[str]) -> Optional[dict]:
+    if not trade_id:
+        return None
+
+    seen = set()
+    candidates = [str(trade_id)]
+    parsed = _parse_iso(trade_id)
+    if parsed:
+        candidates.extend([
+            parsed.isoformat(),
+            parsed.isoformat() + 'Z',
+        ])
+
+    for candidate in candidates:
+        if not candidate or candidate in seen:
+            continue
+        seen.add(candidate)
+        try:
+            rows = query_records(
+                """
+                SELECT * FROM records
+                WHERE ts = ? OR buy_time = ? OR sell_time = ?
+                ORDER BY ts DESC
+                LIMIT 1
+                """,
+                (candidate, candidate, candidate),
+            )
+            if rows:
+                return rows[0]
+        except Exception:
+            pass
+
+    return None
+
+
+def _build_history_where(
+    days: int = 7,
+    ticker: Optional[str] = None,
+    bot_id: Optional[str] = None,
+    bot_name: Optional[str] = None,
+    selected_day: Optional[str] = None,
+    start_ts: Optional[str] = None,
+    end_ts: Optional[str] = None,
+    trend: Optional[str] = None,
+    win_reason: Optional[str] = None,
+):
+    params: List[object] = []
+    clauses: List[str] = []
+
+    if selected_day:
+        try:
+            start_ts, end_ts = day_bounds_utc(selected_day)
+        except Exception:
+            start_ts = start_ts or None
+            end_ts = end_ts or None
+
+    if start_ts:
+        clauses.append("ts >= ?")
+        params.append(start_ts)
+    else:
+        clauses.append("ts >= ?")
+        params.append(recent_days_start_ts(days))
+
+    if end_ts:
+        clauses.append("ts <= ?")
+        params.append(end_ts)
+
+    if ticker:
+        clauses.append("ticker = ?")
+        params.append(ticker)
+    if bot_id:
+        clauses.append("bot_id = ?")
+        params.append(bot_id)
+    if bot_name:
+        clauses.append("bot_name LIKE ?")
+        params.append(f"%{bot_name}%")
+    if trend:
+        clauses.append("trend = ?")
+        params.append(trend)
+    if win_reason:
+        clauses.append("win_reason = ?")
+        params.append(win_reason)
+
+    where = " AND ".join(clauses) if clauses else "1=1"
+    return where, tuple(params)
+
+
+def _to_float(value) -> Optional[float]:
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except Exception:
+        return None
+
+
+def _round_overview_bucket(bucket: dict) -> dict:
+    return {
+        **bucket,
+        "total_profit": round(float(bucket.get("total_profit") or 0), 2),
+        "total_loss": round(float(bucket.get("total_loss") or 0), 2),
+        "net": round(float(bucket.get("net") or 0), 2),
+    }
+
+
+def _empty_overview_totals() -> dict:
+    return {
+        "count": 0,
+        "wins": 0,
+        "losses": 0,
+        "total_profit": 0.0,
+        "total_loss": 0.0,
+        "net": 0.0,
+    }
+
+
+def _aggregate_overview_rows(rows: List[dict], selected_day: Optional[str] = None, profit_filter: str = "all"):
+    daily_map = {}
+    totals = _empty_overview_totals()
+
+    for row in rows:
+        day_key = history_day_key(row.get("ts"))
+        pnl = _to_float(row.get("pnl"))
+
+        if day_key:
+            bucket = daily_map.setdefault(day_key, {
+                "day_key": day_key,
+                "count": 0,
+                "wins": 0,
+                "losses": 0,
+                "total_profit": 0.0,
+                "total_loss": 0.0,
+                "net": 0.0,
+            })
+            bucket["count"] += 1
+            if pnl is not None:
+                bucket["net"] += pnl
+                if pnl > 0:
+                    bucket["wins"] += 1
+                    bucket["total_profit"] += pnl
+                elif pnl < 0:
+                    bucket["losses"] += 1
+                    bucket["total_loss"] += abs(pnl)
+
+        include = True
+        if selected_day and day_key != selected_day:
+            include = False
+        if include and profit_filter == "profit":
+            include = pnl is not None and pnl > 0
+        elif include and profit_filter == "loss":
+            include = pnl is not None and pnl < 0
+
+        if not include:
+            continue
+
+        totals["count"] += 1
+        if pnl is not None:
+            totals["net"] += pnl
+            if pnl > 0:
+                totals["wins"] += 1
+                totals["total_profit"] += pnl
+            elif pnl < 0:
+                totals["losses"] += 1
+                totals["total_loss"] += abs(pnl)
+
+    daily_rows = [_round_overview_bucket(bucket) for _, bucket in sorted(daily_map.items())]
+    return daily_rows, _round_overview_bucket(totals)
 
 
 def _collect_trade_screenshots(record: dict) -> List[dict]:
@@ -154,6 +329,8 @@ def _collect_trade_screenshots(record: dict) -> List[dict]:
     if saved_metadata and saved_metadata.get('buy_price'):
         buy_price = saved_metadata.get('buy_price')
 
+    last_known_price = buy_price
+
     # Collect screenshots with metadata
     screenshots = []
     for dirpath, _, filenames in os.walk(target_dir):
@@ -168,7 +345,7 @@ def _collect_trade_screenshots(record: dict) -> List[dict]:
             
             # Try to extract time from filename
             time_str = None
-            screenshot_price = buy_price
+            screenshot_price = last_known_price
             try:
                 # Filename format: capture_YYYYMMDD_HHMMSS_mmm.jpg
                 if 'capture_' in fname:
@@ -185,6 +362,7 @@ def _collect_trade_screenshots(record: dict) -> List[dict]:
                             if os.path.basename(sm['path']) == fname:
                                 if sm.get('price') is not None:
                                     screenshot_price = sm['price']
+                                    last_known_price = screenshot_price
                                 if sm.get('time') and not time_str:
                                     time_str = sm['time']
                                 break
@@ -221,7 +399,7 @@ async def ingest(
         dict: Upload result with image URL and timestamp
     """
     ts = datetime.utcnow().isoformat() + 'Z'
-    filename = f"{datetime.utcnow().strftime('%Y%m%dT%H%M%S')}_{uuid.uuid4().hex[:8]}_{os.path.basename(file.filename)}"
+    filename = f"{capture_filename_timestamp()}_{uuid.uuid4().hex[:8]}_{os.path.basename(file.filename)}"
     dest = os.path.join(UPLOADS_DIR, filename)
     try:
         with open(dest, "wb") as out:
@@ -344,9 +522,11 @@ def api_history(
     ticker: Optional[str] = None,
     bot_id: Optional[str] = None,
     bot_name: Optional[str] = None,
+    selected_day: Optional[str] = None,
     start_ts: Optional[str] = None,
     end_ts: Optional[str] = None,
     trend: Optional[str] = None,
+    win_reason: Optional[str] = None,
     limit: Optional[int] = None,
     offset: int = 0,
     screenshots: bool = False,
@@ -365,36 +545,17 @@ def api_history(
     Returns:
         list: Filtered records with image URLs
     """
-    params: List[object] = []
-    clauses: List[str] = []
-
-    if start_ts:
-        clauses.append("ts >= ?")
-        params.append(start_ts)
-    else:
-        cutoff = datetime.utcnow() - timedelta(days=days)
-        clauses.append("ts >= ?")
-        params.append(cutoff.isoformat() + 'Z')
-
-    if end_ts:
-        clauses.append("ts <= ?")
-        params.append(end_ts)
-
-    if ticker:
-        clauses.append("ticker = ?")
-        params.append(ticker)
-    if bot_id:
-        clauses.append("bot_id = ?")
-        params.append(bot_id)
-    if bot_name:
-        clauses.append("bot_name LIKE ?")
-        params.append(f"%{bot_name}%")
-
-    if trend:
-        clauses.append("trend = ?")
-        params.append(trend)
-
-    where = " AND ".join(clauses) if clauses else "1=1"
+    where, params = _build_history_where(
+        days=days,
+        ticker=ticker,
+        bot_id=bot_id,
+        bot_name=bot_name,
+        selected_day=selected_day,
+        start_ts=start_ts,
+        end_ts=end_ts,
+        trend=trend,
+        win_reason=win_reason,
+    )
 
     # COUNT + paginated SELECT in one connection
     if limit is None:
@@ -417,6 +578,55 @@ def api_history(
             r["trade_id"] = _extract_trade_id(r)
             r["screenshots"] = []
     return JSONResponse(content=rows, headers={"X-Total-Count": str(total_count)})
+
+
+@router.get("/history_overview")
+def api_history_overview(
+    days: int = 7,
+    ticker: Optional[str] = None,
+    bot_id: Optional[str] = None,
+    bot_name: Optional[str] = None,
+    start_ts: Optional[str] = None,
+    end_ts: Optional[str] = None,
+    trend: Optional[str] = None,
+    win_reason: Optional[str] = None,
+    selected_day: Optional[str] = None,
+    profit_filter: str = "all",
+):
+    """Return 7-day day-bucket counts plus full aggregate totals for the active filters."""
+    where, params = _build_history_where(
+        days=days,
+        ticker=ticker,
+        bot_id=bot_id,
+        bot_name=bot_name,
+        selected_day=None,
+        start_ts=start_ts,
+        end_ts=end_ts,
+        trend=trend,
+        win_reason=win_reason,
+    )
+
+    pnl_expr = (
+        "CASE WHEN buy_price IS NOT NULL AND sell_price IS NOT NULL "
+        "THEN CAST(sell_price AS REAL) - CAST(buy_price AS REAL) ELSE NULL END"
+    )
+    base_rows = query_records(
+        f"SELECT ts, {pnl_expr} AS pnl FROM records WHERE {where} ORDER BY ts ASC",
+        tuple(params),
+    )
+    daily_rows, totals = _aggregate_overview_rows(
+        base_rows,
+        selected_day=selected_day,
+        profit_filter=profit_filter,
+    )
+
+    return {
+        "daily": daily_rows,
+        "totals": totals,
+        "selected_day": selected_day,
+        "profit_filter": profit_filter,
+        "time_mode": get_time_mode(),
+    }
 
 
 @router.get("/uploads/{filename:path}")
@@ -445,9 +655,10 @@ def api_trade_screenshots_for_trade(trade_id: Optional[str] = None):
     """
     if not trade_id:
         return JSONResponse(status_code=400, content={"detail": "trade_id required"})
-    # Build a minimal record dict that _collect_trade_screenshots can work with
-    mock_record = {"trade_id": trade_id, "ts": trade_id}
-    shots = _collect_trade_screenshots(mock_record)
+    record = _find_trade_record(trade_id) or {"trade_id": trade_id, "ts": trade_id}
+    if not record.get("trade_id"):
+        record["trade_id"] = trade_id
+    shots = _collect_trade_screenshots(record)
     return {"trade_id": trade_id, "screenshots": shots}
 
 

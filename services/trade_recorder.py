@@ -9,6 +9,8 @@ from datetime import datetime
 from collections import deque
 from typing import Optional, List, Dict
 
+from config.time_utils import current_folder_day, current_timestamp, current_wall_datetime, folder_day_from_offset
+
 
 class TradeScreenshotRecorder:
     """Records screenshots during trading sessions with context (before/during/after)."""
@@ -37,21 +39,39 @@ class TradeScreenshotRecorder:
         self.current_ticker: Optional[str] = None
         self.buy_price: Optional[float] = None
         self.buy_time: Optional[str] = None
+        self.last_known_price: Optional[float] = None
         self.screenshots_metadata: List[Dict] = []
+
+    def _save_metadata(self):
+        """Persist current trade metadata so replay info survives partial sessions."""
+        if not self.trade_dir:
+            return
+        try:
+            os.makedirs(self.trade_dir, exist_ok=True)
+            metadata_file = os.path.join(self.trade_dir, 'metadata.json')
+            metadata = {
+                'ticker': self.current_ticker,
+                'buy_price': self.buy_price,
+                'buy_time': self.buy_time,
+                'screenshots': self.screenshots_metadata,
+            }
+            with open(metadata_file, 'w', encoding='utf-8') as f:
+                json.dump(metadata, f, indent=2)
+        except Exception as e:
+            print(f"Failed to save metadata: {e}")
     
     def set_hwnd(self, hwnd: int):
         """Set the window handle for this recorder."""
         self.hwnd = hwnd
     
     def _ensure_day_dir(self) -> str:
-        """Ensure daily directory exists. On day change, prune folders older than 3 days
-        instead of deleting everything (preserves yesterday's data)."""
-        day = datetime.utcnow().strftime("%Y%m%d")
+        """Ensure daily directory exists and keep only today plus yesterday."""
+        day = current_folder_day()
         if self.current_day != day:
-            # Delete day-folders that are more than 3 days old
+            # Delete day-folders outside the 2-day retention window.
             try:
-                from datetime import timedelta
-                cutoff = (datetime.utcnow() - timedelta(days=3)).strftime("%Y%m%d")
+                retention_days = 2
+                cutoff = folder_day_from_offset(retention_days - 1)
                 if os.path.exists(self.base_dir):
                     for entry in os.listdir(self.base_dir):
                         if entry.isdigit() and entry < cutoff:
@@ -92,14 +112,22 @@ class TradeScreenshotRecorder:
             current_price: Current price at time of capture
         """
         self._ensure_day_dir()
-        capture_time = datetime.utcnow().isoformat()
+        capture_time = current_timestamp()
+        if current_price is not None:
+            self.last_known_price = current_price
+
+        effective_price = current_price
+        if effective_price is None and self.last_known_price is not None:
+            effective_price = self.last_known_price
+        if effective_price is None and (self.active_trade or self.after_remaining > 0):
+            effective_price = self.buy_price
         
         # Always add to pre-buffer
         if img_path:
             self.pre_buffer.append({
                 'path': img_path,
                 'time': capture_time,
-                'price': current_price
+                'price': effective_price
             })
         
         # If active trade, copy to trade directory
@@ -108,7 +136,7 @@ class TradeScreenshotRecorder:
             self.screenshots_metadata.append({
                 'path': img_path,
                 'time': capture_time,
-                'price': current_price,
+                'price': effective_price,
                 'ticker': self.current_ticker
             })
         # Post-trade capture window
@@ -117,7 +145,7 @@ class TradeScreenshotRecorder:
             self.screenshots_metadata.append({
                 'path': img_path,
                 'time': capture_time,
-                'price': current_price,
+                'price': effective_price,
                 'ticker': self.current_ticker
             })
             self.after_remaining -= 1
@@ -136,7 +164,7 @@ class TradeScreenshotRecorder:
         """
         day = self._ensure_day_dir()
         safe_ticker = (ticker or "UNKNOWN").replace(os.sep, "_")
-        trade_id = (trade_ts or datetime.utcnow().isoformat()).replace(":", "-")
+        trade_id = (trade_ts or current_timestamp()).replace(":", "-")
         
         # Build directory path: base_dir/day/hwnd_X/ticker/trade_timestamp
         base = os.path.join(self.base_dir, day)
@@ -147,7 +175,9 @@ class TradeScreenshotRecorder:
         self.trade_dir = trade_dir
         self.current_ticker = ticker
         self.buy_price = buy_price
-        self.buy_time = trade_ts or datetime.utcnow().isoformat()
+        if buy_price is not None:
+            self.last_known_price = buy_price
+        self.buy_time = trade_ts or current_timestamp()
         self.screenshots_metadata = []
 
         print(f"[TradeRecorder] Starting trade for {ticker} at ${buy_price}")
@@ -168,6 +198,7 @@ class TradeScreenshotRecorder:
         
         self.active_trade = True
         self.after_remaining = 0
+        self._save_metadata()
     
     def end_trade(self):
         """End the current trade recording session."""
@@ -184,19 +215,8 @@ class TradeScreenshotRecorder:
                 pass
         
         # Save metadata to JSON file
-        if self.trade_dir and self.screenshots_metadata:
-            try:
-                metadata_file = os.path.join(self.trade_dir, 'metadata.json')
-                metadata = {
-                    'ticker': self.current_ticker,
-                    'buy_price': self.buy_price,
-                    'buy_time': self.buy_time,
-                    'screenshots': self.screenshots_metadata
-                }
-                with open(metadata_file, 'w') as f:
-                    json.dump(metadata, f, indent=2)
-            except Exception as e:
-                print(f"Failed to save metadata: {e}")
+        if self.trade_dir:
+            self._save_metadata()
         
         self.active_trade = False
         self.after_remaining = max(1, self.post_count)
@@ -227,6 +247,7 @@ class TradeScreenshotRecorder:
                     pass
 
             buy_price = (saved_meta or {}).get('buy_price')
+            last_known_price = buy_price
 
             for fname in sorted(os.listdir(target_dir)):
                 if fname == 'metadata.json':
@@ -245,7 +266,7 @@ class TradeScreenshotRecorder:
                     rel = fname
 
                 time_str = None
-                screenshot_price = buy_price
+                screenshot_price = last_known_price
                 try:
                     if 'capture_' in fname:
                         parts = fname.split('_')
@@ -257,6 +278,7 @@ class TradeScreenshotRecorder:
                             if isinstance(sm, dict) and os.path.basename(sm.get('path', '')) == fname:
                                 if sm.get('price') is not None:
                                     screenshot_price = sm['price']
+                                    last_known_price = screenshot_price
                                 if sm.get('time') and not time_str:
                                     time_str = sm['time']
                                 break

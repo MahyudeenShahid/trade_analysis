@@ -7,6 +7,7 @@ import os
 from datetime import datetime
 
 from .manager import manager
+from config.time_utils import current_timestamp
 
 
 async def broadcaster_loop():
@@ -193,7 +194,7 @@ async def broadcaster_loop():
                 new_trades = []
 
             payload = {
-                'timestamp': datetime.utcnow().isoformat() + 'Z',
+                'timestamp': current_timestamp(),
                 'workers': workers_payload,
                 'trade_summary': trader.summary(),
                 'new_trades': new_trades,

@@ -2,6 +2,7 @@
 
 from fastapi import APIRouter
 from services.background_service import selector
+from config.time_utils import current_timestamp
 
 router = APIRouter(prefix="", tags=["windows"])
 
@@ -26,8 +27,7 @@ def api_ping():
     Returns:
         dict: Status and timestamp
     """
-    from datetime import datetime
-    return {"ok": True, "ts": datetime.utcnow().isoformat() + 'Z'}
+    return {"ok": True, "ts": current_timestamp()}
 
 
 __all__ = ["router"]

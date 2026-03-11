@@ -7,6 +7,7 @@ from . import trades
 from . import bots
 from . import websocket
 from . import chart
+from . import settings
 
 __all__ = [
     "windows",
@@ -16,4 +17,5 @@ __all__ = [
     "bots",
     "websocket",
     "chart",
+    "settings",
 ]
