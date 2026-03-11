@@ -15,6 +15,7 @@ class TradingCore:
         self.state_manager = state_manager
         self.trade_history: List[Dict] = []
         self._send_cursor: int = 0  # tracks how many trades have been sent via WS delta
+        self._total_logged: int = 0  # monotonic counter — never decremented by list trimming
         self.on_trade_callback = on_trade_callback
     
     def buy(self, key: str, price: float, state: TickerState):
@@ -87,14 +88,20 @@ class TradingCore:
         }
         
         state.trade_history.append(trade)
-        # Cap per-ticker history to last 500 trades to prevent memory growth
-        if len(state.trade_history) > 500:
-            state.trade_history = state.trade_history[-500:]
+        # Cap per-ticker history to last 5000 trades to prevent memory growth
+        if len(state.trade_history) > 5000:
+            state.trade_history = state.trade_history[-5000:]
 
         self.trade_history.append(trade)
-        # Cap global history to last 1000 trades to prevent memory growth
-        if len(self.trade_history) > 1000:
-            self.trade_history = self.trade_history[-1000:]
+        # Cap global history to last 10000 trades to prevent memory growth.
+        # Adjust _send_cursor so get_new_trades() still returns the correct tail
+        # after the list is compacted (otherwise _send_cursor would be stuck at
+        # the old length and every future get_new_trades() call would return []).
+        if len(self.trade_history) > 10000:
+            excess = len(self.trade_history) - 10000
+            self.trade_history = self.trade_history[excess:]
+            self._send_cursor = max(0, self._send_cursor - excess)
+        self._total_logged += 1  # always increments; never affected by trimming
         
         if self.on_trade_callback:
             try:
