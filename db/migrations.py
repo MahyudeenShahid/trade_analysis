@@ -136,6 +136,56 @@ def init_db():
         "INSERT OR IGNORE INTO app_settings (key, value) VALUES (?, ?)",
         ("time_mode", "local"),
     )
+    # IBKR connection defaults
+    for _k, _v in [
+        ("ibkr_enabled", "0"),
+        ("ibkr_host", "127.0.0.1"),
+        ("ibkr_port", "4002"),
+        ("ibkr_client_id", "1"),
+    ]:
+        cur.execute(
+            "INSERT OR IGNORE INTO app_settings (key, value) VALUES (?, ?)",
+            (_k, _v),
+        )
+
+    # Live orders table — one row per order placed via IBKR
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS live_orders (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            ts              TEXT NOT NULL,
+            hwnd            INTEGER,
+            bot_id          TEXT,
+            ticker          TEXT,
+            direction       TEXT,
+            order_type      TEXT,
+            qty             REAL,
+            price           REAL,
+            limit_price     REAL,
+            ibkr_order_id   INTEGER,
+            status          TEXT,
+            fill_price      REAL,
+            fill_ts         TEXT,
+            error_msg       TEXT,
+            retries         INTEGER DEFAULT 0,
+            trade_ref_id    TEXT,
+            meta            TEXT
+        )
+        """
+    )
+
+    # Order book snapshots — L2 depth at the moment an order fires
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS order_book_snapshots (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            ts              TEXT NOT NULL,
+            ticker          TEXT,
+            trade_ref_id    TEXT,
+            snapshot        TEXT
+        )
+        """
+    )
 
     # Migration: ensure new columns exist in bots
     try:
@@ -165,6 +215,13 @@ def init_db():
             ("rule_9_amount", "REAL"),
             ("rule_9_flips", "INTEGER"),
             ("rule_9_window_minutes", "INTEGER"),
+            # IBKR live trading settings
+            ("live_trading_enabled", "INTEGER DEFAULT 0"),
+            ("order_size_type", "TEXT DEFAULT 'fixed'"),
+            ("order_size_value", "REAL DEFAULT 1.0"),
+            ("buy_order_type", "TEXT DEFAULT 'market'"),
+            ("sell_order_type", "TEXT DEFAULT 'market'"),
+            ("retry_delay_secs", "REAL DEFAULT 5.0"),
         ]
         for col, typ in bot_additions:
             if col not in existing_bots:
@@ -186,6 +243,8 @@ def init_db():
     conn2.execute("CREATE INDEX IF NOT EXISTS idx_records_ts ON records(ts DESC)")
     conn2.execute("CREATE INDEX IF NOT EXISTS idx_records_ts_bot ON records(ts DESC, bot_id)")
     conn2.execute("CREATE INDEX IF NOT EXISTS idx_records_ticker ON records(ticker)")
+    conn2.execute("CREATE INDEX IF NOT EXISTS idx_live_orders_ts ON live_orders(ts DESC)")
+    conn2.execute("CREATE INDEX IF NOT EXISTS idx_live_orders_hwnd ON live_orders(hwnd, ts DESC)")
     conn2.commit()
     conn2.close()
 

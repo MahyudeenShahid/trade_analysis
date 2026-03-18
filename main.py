@@ -30,6 +30,7 @@ from config.settings import (
 from db.migrations import init_db
 from ws.broadcaster import broadcaster_loop
 from api.routes import windows, capture, history, trades, bots, websocket, chart, settings
+from api.routes import ibkr as ibkr_routes
 
 
 # Create FastAPI application
@@ -110,12 +111,15 @@ async def log_requests(request, call_next):
 async def startup_event():
     """
     Initialize application on startup.
-    
+
     - Initializes database schema
     - Starts WebSocket broadcaster loop for real-time updates
+    - Starts IBKR keepalive loop (connects when ibkr_enabled=1 in app_settings)
     """
     init_db()
     asyncio.create_task(broadcaster_loop())
+    from ibkr.client import ibkr_keepalive_loop
+    asyncio.create_task(ibkr_keepalive_loop())
 
 
 # ============================================================================
@@ -131,6 +135,7 @@ app.include_router(bots.router)
 app.include_router(websocket.router)
 app.include_router(chart.router)
 app.include_router(settings.router)
+app.include_router(ibkr_routes.router)
 
 
 # ============================================================================

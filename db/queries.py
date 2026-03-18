@@ -463,6 +463,104 @@ def upsert_bot_settings(hwnd: int, settings: dict):
         conn.close()
 
 
+def get_app_settings() -> dict:
+    """Return all app_settings rows as a key→value dict."""
+    rows = query_records("SELECT key, value FROM app_settings")
+    return {r["key"]: r["value"] for r in rows}
+
+
+def set_app_setting(key: str, value: str):
+    """Upsert a single app_settings row."""
+    with DB_LOCK:
+        conn = sqlite3.connect(DB_PATH)
+        cur = conn.cursor()
+        cur.execute(
+            "INSERT INTO app_settings (key, value) VALUES (?, ?) "
+            "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            (key, str(value)),
+        )
+        conn.commit()
+        conn.close()
+
+
+def save_live_order(order: dict) -> int:
+    """Insert a new live_orders row and return its id."""
+    with DB_LOCK:
+        conn = sqlite3.connect(DB_PATH)
+        cur = conn.cursor()
+        cur.execute(
+            """INSERT INTO live_orders
+               (ts, hwnd, bot_id, ticker, direction, order_type, qty, price,
+                limit_price, ibkr_order_id, status, fill_price, fill_ts,
+                error_msg, retries, trade_ref_id, meta)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                order.get("ts"),
+                order.get("hwnd"),
+                order.get("bot_id"),
+                order.get("ticker"),
+                order.get("direction"),
+                order.get("order_type"),
+                order.get("qty"),
+                order.get("price"),
+                order.get("limit_price"),
+                order.get("ibkr_order_id"),
+                order.get("status", "pending"),
+                order.get("fill_price"),
+                order.get("fill_ts"),
+                order.get("error_msg"),
+                order.get("retries", 0),
+                order.get("trade_ref_id"),
+                json.dumps(order.get("meta", {})) if order.get("meta") is not None else None,
+            ),
+        )
+        row_id = cur.lastrowid
+        conn.commit()
+        conn.close()
+        return row_id
+
+
+def update_live_order_status(
+    order_id: int,
+    status: str,
+    fill_price=None,
+    fill_ts=None,
+    error_msg=None,
+    ibkr_order_id=None,
+    retries=None,
+):
+    """Update status fields on an existing live_orders row."""
+    with DB_LOCK:
+        conn = sqlite3.connect(DB_PATH)
+        cur = conn.cursor()
+        cur.execute(
+            """UPDATE live_orders
+               SET status = ?,
+                   fill_price = COALESCE(?, fill_price),
+                   fill_ts = COALESCE(?, fill_ts),
+                   error_msg = COALESCE(?, error_msg),
+                   ibkr_order_id = COALESCE(?, ibkr_order_id),
+                   retries = COALESCE(?, retries)
+               WHERE id = ?""",
+            (status, fill_price, fill_ts, error_msg, ibkr_order_id, retries, order_id),
+        )
+        conn.commit()
+        conn.close()
+
+
+def get_live_orders(hwnd: int = None, limit: int = 50) -> list:
+    """Return recent live_orders rows, optionally filtered by hwnd."""
+    if hwnd is not None:
+        return query_records(
+            "SELECT * FROM live_orders WHERE hwnd = ? ORDER BY ts DESC LIMIT ?",
+            (int(hwnd), limit),
+        )
+    return query_records(
+        "SELECT * FROM live_orders ORDER BY ts DESC LIMIT ?",
+        (limit,),
+    )
+
+
 __all__ = [
     "query_records",
     "get_latest_record",
@@ -470,4 +568,9 @@ __all__ = [
     "get_bot_db_entry",
     "upsert_bot_from_last_result",
     "upsert_bot_settings",
+    "get_app_settings",
+    "set_app_setting",
+    "save_live_order",
+    "update_live_order_status",
+    "get_live_orders",
 ]

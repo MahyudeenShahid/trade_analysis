@@ -23,6 +23,30 @@ python -m uvicorn main:app --host 0.0.0.0 --port 8000 --reload
 
 ```
 
+## IB Gateway Controls In Marketview UI
+
+After backend and frontend are running, open the Marketview Control Panel.
+
+- Connect IB: connects the app to IB Gateway (backend endpoint: `POST /ibkr/connect`)
+- Disconnect IB: disconnects the app from IB Gateway (backend endpoint: `POST /ibkr/disconnect`)
+- Check Status: shows if IB Gateway is currently connected (backend endpoint: `GET /ibkr/status`)
+
+### Frontend API URL Environment File
+
+The frontend API URL is configured in the Marketview env file:
+
+- Local env file: `marketview/.env`
+- Template file: `marketview/.env.example`
+
+Set these values:
+
+```env
+VITE_API_BASE_URL=http://localhost:8000
+VITE_API_KEY=devkey
+```
+
+Restart the frontend after changing env values.
+
 ---
 
 ## Trading Rules (Detailed)

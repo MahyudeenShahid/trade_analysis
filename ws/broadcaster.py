@@ -162,6 +162,15 @@ async def broadcaster_loop():
                                                                 ev['screenshots'] = shots
                                                     except Exception:
                                                         pass
+                                                # Fire live IBKR order if bot has live trading enabled
+                                                try:
+                                                    from db.queries import get_bot_db_entry
+                                                    bot_db_row = get_bot_db_entry(int(hwnd))
+                                                    if bot_db_row and bot_db_row.get('live_trading_enabled'):
+                                                        from ibkr.order_router import handle_trade_event as ibkr_handle
+                                                        asyncio.create_task(ibkr_handle(ev, bot_db_row, int(hwnd)))
+                                                except Exception:
+                                                    pass
                                         except Exception:
                                             pass
                                 except Exception:
@@ -208,6 +217,19 @@ async def broadcaster_loop():
                 'trade_summary': trader.summary(),
                 'new_trades': new_trades,
             }
+
+            # IBKR live trading status (non-blocking — all reads from in-memory or DB)
+            try:
+                from ibkr.client import is_connected as ibkr_is_connected
+                from ibkr.order_book import get_all_snapshots
+                from db.queries import get_live_orders
+                payload['ibkr_connected'] = ibkr_is_connected()
+                payload['order_books'] = get_all_snapshots()
+                payload['live_orders'] = get_live_orders(limit=20)
+            except Exception:
+                payload['ibkr_connected'] = False
+                payload['order_books'] = {}
+                payload['live_orders'] = []
 
             await manager.broadcast(json.dumps(payload))
         except Exception as e:

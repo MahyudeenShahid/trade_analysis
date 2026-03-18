@@ -9,8 +9,12 @@ opencv-contrib-python>=4.7.0
 scipy>=1.9
 pywin32>=304
 psutil>=5.9
+ib-async>=2.1.0
+pytz>=2023.3
 
 # Notes:
 # - `opencv-contrib-python` includes OpenCV extra modules used by the chart detector
 # - `pywin32` is required for the `win32gui`/`win32ui` APIs on Windows
 # - Some modules (chart line detector, cv2) are used lazily; remove any you don't need
+# - `ib-async` is the maintained fork of the archived ib_insync (author died March 2024)
+# - `pytz` is used for timezone-aware market-hours checks
