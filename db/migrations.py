@@ -222,6 +222,9 @@ def init_db():
             ("buy_order_type", "TEXT DEFAULT 'market'"),
             ("sell_order_type", "TEXT DEFAULT 'market'"),
             ("retry_delay_secs", "REAL DEFAULT 5.0"),
+            ("max_retries", "INTEGER DEFAULT 3"),
+            ("min_trade_dollars", "REAL DEFAULT 0"),
+            ("validate_conditions_on_retry", "INTEGER DEFAULT 1"),
         ]
         for col, typ in bot_additions:
             if col not in existing_bots:
