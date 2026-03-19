@@ -235,6 +235,18 @@ def init_db():
     except Exception:
         pass
     
+    # Migration: ensure screenshot_path column exists in live_orders
+    try:
+        cur.execute("PRAGMA table_info(live_orders)")
+        existing_live_orders_cols = [r[1] for r in cur.fetchall()]
+        if "screenshot_path" not in existing_live_orders_cols:
+            try:
+                cur.execute("ALTER TABLE live_orders ADD COLUMN screenshot_path TEXT")
+            except Exception:
+                pass
+    except Exception:
+        pass
+
     conn.commit()
     conn.close()
     os.makedirs(UPLOADS_DIR, exist_ok=True)

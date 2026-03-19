@@ -145,6 +145,9 @@ async def handle_trade_event(trade_dict: dict, bot_row: dict, hwnd: int, get_cur
     """
     from db.queries import get_app_settings, save_live_order, update_live_order_status
     from ibkr.order_book import get_snapshot
+    from screenshot_capture import ScreenshotCapture
+    import os
+    from datetime import datetime as dt_import
 
     try:
         cfg = get_app_settings()
@@ -208,6 +211,27 @@ async def handle_trade_event(trade_dict: dict, bot_row: dict, hwnd: int, get_cur
 
         ts = datetime.utcnow().isoformat() + "Z"
 
+        # Capture screenshot
+        screenshot_path = None
+        try:
+            base_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "trade_screenshots")
+            date_str = dt_import.now().strftime("%Y%m%d")
+            trade_ts_str = dt_import.now().strftime("%Y%m%d_%H%M%S")
+            screenshot_dir = os.path.join(base_dir, date_str, f"hwnd_{hwnd}", ticker, f"trade_{trade_ts_str}")
+            os.makedirs(screenshot_dir, exist_ok=True)
+
+            capturer = ScreenshotCapture()
+            screenshot_file = f"live_{direction}_{trade_ts_str}.jpg"
+            screenshot_full_path = os.path.join(screenshot_dir, screenshot_file)
+
+            img = capturer.capture_window(hwnd, screenshot_full_path)
+            if img:
+                # Store relative path from trade_screenshots root
+                screenshot_path = os.path.relpath(screenshot_full_path, base_dir).replace(os.sep, '/')
+                logger.info(f"[IBKR] Screenshot saved: {screenshot_path}")
+        except Exception as sc_err:
+            logger.warning(f"[IBKR] Screenshot capture failed (non-fatal): {sc_err}")
+
         # Save pending row first so we have an id for updates
         order_row_id = save_live_order(
             {
@@ -222,6 +246,7 @@ async def handle_trade_event(trade_dict: dict, bot_row: dict, hwnd: int, get_cur
                 "limit_price": limit_price,
                 "status": "pending",
                 "trade_ref_id": trade_ref_id,
+                "screenshot_path": screenshot_path,
             }
         )
 

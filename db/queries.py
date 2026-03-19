@@ -241,6 +241,18 @@ def upsert_bot_settings(hwnd: int, settings: dict):
     rule_9_flips = settings.get('rule_9_flips')
     rule_9_window_minutes = settings.get('rule_9_window_minutes')
 
+    # IBKR order settings
+    live_trading_enabled = settings.get('live_trading_enabled')
+    order_size_type = settings.get('order_size_type')
+    order_size_value = settings.get('order_size_value')
+    buy_order_type = settings.get('buy_order_type')
+    sell_order_type = settings.get('sell_order_type')
+    retry_delay_secs = settings.get('retry_delay_secs')
+    max_retries = settings.get('max_retries')
+    min_trade_dollars = settings.get('min_trade_dollars')
+    validate_conditions_on_retry = settings.get('validate_conditions_on_retry')
+    default_trade_enabled = settings.get('default_trade_enabled')
+
     # Normalize
     if rule_1_enabled is not None:
         rule_1_enabled = 1 if bool(rule_1_enabled) else 0
@@ -331,6 +343,48 @@ def upsert_bot_settings(hwnd: int, settings: dict):
         except Exception:
             rule_9_window_minutes = None
 
+    # Normalize IBKR order settings
+    if live_trading_enabled is not None:
+        live_trading_enabled = 1 if bool(live_trading_enabled) else 0
+    if order_size_type is not None:
+        order_size_type = str(order_size_type) if order_size_type in ('fixed', 'percent', 'dollars') else None
+    if order_size_value is not None:
+        try:
+            order_size_value = float(order_size_value)
+            if order_size_value <= 0:
+                order_size_value = 1.0
+        except Exception:
+            order_size_value = None
+    if buy_order_type is not None:
+        buy_order_type = str(buy_order_type) if buy_order_type in ('market', 'limit') else None
+    if sell_order_type is not None:
+        sell_order_type = str(sell_order_type) if sell_order_type in ('market', 'limit') else None
+    if retry_delay_secs is not None:
+        try:
+            retry_delay_secs = float(retry_delay_secs)
+            if retry_delay_secs < 0:
+                retry_delay_secs = 5.0
+        except Exception:
+            retry_delay_secs = None
+    if max_retries is not None:
+        try:
+            max_retries = int(max_retries)
+            if max_retries < 0:
+                max_retries = 3
+        except Exception:
+            max_retries = None
+    if min_trade_dollars is not None:
+        try:
+            min_trade_dollars = float(min_trade_dollars)
+            if min_trade_dollars < 0:
+                min_trade_dollars = 0.0
+        except Exception:
+            min_trade_dollars = None
+    if validate_conditions_on_retry is not None:
+        validate_conditions_on_retry = 1 if bool(validate_conditions_on_retry) else 0
+    if default_trade_enabled is not None:
+        default_trade_enabled = 1 if bool(default_trade_enabled) else 0
+
     # Optional meta merge
     meta = settings.get('meta')
     if meta is not None and not isinstance(meta, dict):
@@ -390,6 +444,16 @@ def upsert_bot_settings(hwnd: int, settings: dict):
                     rule_9_amount = COALESCE(?, rule_9_amount),
                     rule_9_flips = COALESCE(?, rule_9_flips),
                     rule_9_window_minutes = COALESCE(?, rule_9_window_minutes),
+                    live_trading_enabled = COALESCE(?, live_trading_enabled),
+                    order_size_type = COALESCE(?, order_size_type),
+                    order_size_value = COALESCE(?, order_size_value),
+                    buy_order_type = COALESCE(?, buy_order_type),
+                    sell_order_type = COALESCE(?, sell_order_type),
+                    retry_delay_secs = COALESCE(?, retry_delay_secs),
+                    max_retries = COALESCE(?, max_retries),
+                    min_trade_dollars = COALESCE(?, min_trade_dollars),
+                    validate_conditions_on_retry = COALESCE(?, validate_conditions_on_retry),
+                    default_trade_enabled = COALESCE(?, default_trade_enabled),
                     meta = ?
                 WHERE hwnd = ?
                 """,
@@ -419,6 +483,16 @@ def upsert_bot_settings(hwnd: int, settings: dict):
                     rule_9_amount,
                     rule_9_flips,
                     rule_9_window_minutes,
+                    live_trading_enabled,
+                    order_size_type,
+                    order_size_value,
+                    buy_order_type,
+                    sell_order_type,
+                    retry_delay_secs,
+                    max_retries,
+                    min_trade_dollars,
+                    validate_conditions_on_retry,
+                    default_trade_enabled,
                     json.dumps(merged_meta) if isinstance(merged_meta, dict) else json.dumps({}),
                     hwnd,
                 ),
@@ -426,8 +500,8 @@ def upsert_bot_settings(hwnd: int, settings: dict):
         else:
             cur.execute(
                 """
-                INSERT INTO bots (hwnd, name, ticker, total_pnl, open_direction, open_price, open_time, rule_1_enabled, rule_2_enabled, rule_3_enabled, rule_4_enabled, rule_5_enabled, rule_6_enabled, rule_7_enabled, rule_8_enabled, rule_9_enabled, take_profit_amount, stop_loss_amount, rule_3_drop_count, rule_5_down_minutes, rule_5_reversal_amount, rule_5_scalp_amount, rule_6_down_minutes, rule_6_profit_amount, rule_7_up_minutes, rule_8_buy_offset, rule_8_sell_offset, rule_9_amount, rule_9_flips, rule_9_window_minutes, meta)
-                VALUES (?, ?, ?, NULL, NULL, NULL, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO bots (hwnd, name, ticker, total_pnl, open_direction, open_price, open_time, rule_1_enabled, rule_2_enabled, rule_3_enabled, rule_4_enabled, rule_5_enabled, rule_6_enabled, rule_7_enabled, rule_8_enabled, rule_9_enabled, take_profit_amount, stop_loss_amount, rule_3_drop_count, rule_5_down_minutes, rule_5_reversal_amount, rule_5_scalp_amount, rule_6_down_minutes, rule_6_profit_amount, rule_7_up_minutes, rule_8_buy_offset, rule_8_sell_offset, rule_9_amount, rule_9_flips, rule_9_window_minutes, live_trading_enabled, order_size_type, order_size_value, buy_order_type, sell_order_type, retry_delay_secs, max_retries, min_trade_dollars, validate_conditions_on_retry, default_trade_enabled, meta)
+                VALUES (?, ?, ?, NULL, NULL, NULL, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     hwnd,
@@ -456,6 +530,16 @@ def upsert_bot_settings(hwnd: int, settings: dict):
                     rule_9_amount if rule_9_amount is not None else 0.25,
                     rule_9_flips if rule_9_flips is not None else 3,
                     rule_9_window_minutes if rule_9_window_minutes is not None else 3,
+                    live_trading_enabled if live_trading_enabled is not None else 0,
+                    order_size_type if order_size_type is not None else 'fixed',
+                    order_size_value if order_size_value is not None else 1.0,
+                    buy_order_type if buy_order_type is not None else 'market',
+                    sell_order_type if sell_order_type is not None else 'market',
+                    retry_delay_secs if retry_delay_secs is not None else 5.0,
+                    max_retries if max_retries is not None else 3,
+                    min_trade_dollars if min_trade_dollars is not None else 0.0,
+                    validate_conditions_on_retry if validate_conditions_on_retry is not None else 1,
+                    default_trade_enabled if default_trade_enabled is not None else 1,
                     json.dumps(merged_meta) if isinstance(merged_meta, dict) else json.dumps({}),
                 ),
             )
@@ -492,8 +576,8 @@ def save_live_order(order: dict) -> int:
             """INSERT INTO live_orders
                (ts, hwnd, bot_id, ticker, direction, order_type, qty, price,
                 limit_price, ibkr_order_id, status, fill_price, fill_ts,
-                error_msg, retries, trade_ref_id, meta)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                error_msg, retries, trade_ref_id, meta, screenshot_path)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 order.get("ts"),
                 order.get("hwnd"),
@@ -512,6 +596,7 @@ def save_live_order(order: dict) -> int:
                 order.get("retries", 0),
                 order.get("trade_ref_id"),
                 json.dumps(order.get("meta", {})) if order.get("meta") is not None else None,
+                order.get("screenshot_path"),
             ),
         )
         row_id = cur.lastrowid

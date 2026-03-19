@@ -165,10 +165,25 @@ async def broadcaster_loop():
                                                 # Fire live IBKR order if bot has live trading enabled
                                                 try:
                                                     from db.queries import get_bot_db_entry
-                                                    bot_db_row = get_bot_db_entry(int(hwnd))
-                                                    if bot_db_row and bot_db_row.get('live_trading_enabled'):
+                                                    bot_db_row = get_bot_db_entry(int(hwnd)) or {}
+                                                    bot_session_row = bot if isinstance(bot, dict) else {}
+
+                                                    # UI saves bot settings in session memory (/bots/upsert), while
+                                                    # DB can be stale. Merge with session taking precedence so IBKR
+                                                    # uses the latest order size/type selected by the user.
+                                                    bot_row_for_order = {**bot_db_row, **bot_session_row}
+                                                    if bot_id and not bot_row_for_order.get('bot_id'):
+                                                        bot_row_for_order['bot_id'] = bot_id
+
+                                                    live_enabled_raw = bot_row_for_order.get('live_trading_enabled')
+                                                    if isinstance(live_enabled_raw, str):
+                                                        live_enabled = live_enabled_raw.strip().lower() in ('1', 'true', 'yes', 'on')
+                                                    else:
+                                                        live_enabled = bool(live_enabled_raw)
+
+                                                    if live_enabled:
                                                         from ibkr.order_router import handle_trade_event as ibkr_handle
-                                                        asyncio.create_task(ibkr_handle(ev, bot_db_row, int(hwnd)))
+                                                        asyncio.create_task(ibkr_handle(ev, bot_row_for_order, int(hwnd)))
                                                 except Exception:
                                                     pass
                                         except Exception:

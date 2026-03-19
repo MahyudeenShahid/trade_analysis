@@ -106,6 +106,11 @@ class TradeSimulator:
         trend = trend.lower()
         self._ensure_ticker(state_key, ticker=ticker, bot_id=bot_id, bot_name=bot_name)
         state = self.state_manager.get(state_key)
+
+        # RULE #4 must gate ALL auto-trading logic (including Rules 1-3).
+        # If outside allowed schedule, return early with no auto action.
+        if auto and rule_4_enabled and not self._is_trading_hours(rule_4_start_time, rule_4_end_time, rule_4_days):
+            return self.summary()
         
         # Create callback wrappers
         sell_cb = lambda p, win_reason=None: self._sell(state_key, p, win_reason)
@@ -136,10 +141,6 @@ class TradeSimulator:
                 pass
         
         if auto:
-            # RULE #4: trade only during market hours (optionally custom time/days)
-            if rule_4_enabled and not self._is_trading_hours(rule_4_start_time, rule_4_end_time, rule_4_days):
-                return self.summary()
-            
             # RULE #5: 3-minute downtrend → reversal + scalp
             if rule_5_enabled:
                 try:
