@@ -144,13 +144,19 @@ async def broadcaster_loop():
                                     trader.on_signal(trend, price, ticker, auto=True, rule_1_enabled=rule_enabled, take_profit_amount=tp_amount, rule_2_enabled=rule2_enabled, stop_loss_amount=sl_amount, rule_3_enabled=rule3_enabled, rule_3_drop_count=rule3_drop, rule_4_enabled=rule4_enabled, rule_4_start_time=rule4_start, rule_4_end_time=rule4_end, rule_4_days=rule4_days, rule_5_enabled=rule5_enabled, rule_5_down_minutes=rule5_down, rule_5_reversal_amount=rule5_reversal, rule_5_scalp_amount=rule5_scalp, rule_6_enabled=rule6_enabled, rule_6_down_minutes=rule6_down, rule_6_profit_amount=rule6_profit, rule_7_enabled=rule7_enabled, rule_7_up_minutes=rule7_up, rule_8_enabled=rule8_enabled, rule_8_buy_offset=rule8_buy, rule_8_sell_offset=rule8_sell, rule_9_enabled=rule9_enabled, rule_9_amount=rule9_amount, rule_9_flips=rule9_flips, rule_9_window_minutes=rule9_window, default_trade_enabled=default_trade, bot_id=bot_id, bot_name=bot_name)
                                     after_total = trader.core._total_logged
                                     new_trade_count = after_total - before_total
-                                    if new_trade_count > 0 and hasattr(svc, 'handle_trade_event'):
+                                    if new_trade_count > 0:
                                         try:
                                             for ev in trader.trade_history[-new_trade_count:]:
                                                 if bot_id and ev.get('bot_id') != bot_id:
                                                     continue
                                                 direction = ev.get('direction')
-                                                svc.handle_trade_event(direction, ev.get('ticker'), ev.get('trade_id') or ev.get('ts'), ev.get('price'))
+                                                # Local screenshot/trade-recorder handler should never block
+                                                # IBKR dispatch. Keep it isolated and best-effort.
+                                                if hasattr(svc, 'handle_trade_event'):
+                                                    try:
+                                                        svc.handle_trade_event(direction, ev.get('ticker'), ev.get('trade_id') or ev.get('ts'), ev.get('price'))
+                                                    except Exception:
+                                                        pass
                                                 # After a sell, the trade folder is complete — attach all
                                                 # captured screenshots directly onto the trade record so
                                                 # the frontend receives them in the same WS message.

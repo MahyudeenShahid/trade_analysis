@@ -151,7 +151,12 @@ async def handle_trade_event(trade_dict: dict, bot_row: dict, hwnd: int, get_cur
 
     try:
         cfg = get_app_settings()
-        if cfg.get("ibkr_enabled", "0") != "1":
+        ibkr_enabled_raw = cfg.get("ibkr_enabled", "0")
+        if isinstance(ibkr_enabled_raw, str):
+            ibkr_enabled = ibkr_enabled_raw.strip().lower() in ("1", "true", "yes", "on")
+        else:
+            ibkr_enabled = bool(ibkr_enabled_raw)
+        if not ibkr_enabled:
             return
         if not bot_row.get("live_trading_enabled"):
             return
