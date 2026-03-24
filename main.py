@@ -113,13 +113,40 @@ async def startup_event():
     Initialize application on startup.
 
     - Initializes database schema
+    - Auto-enables IBKR if not already configured
     - Starts WebSocket broadcaster loop for real-time updates
     - Starts IBKR keepalive loop (connects when ibkr_enabled=1 in app_settings)
     """
+    # Step 1: Initialize database
+    print("[Startup] Initializing database...")
     init_db()
+    print("[Startup] Database initialized ✓")
+
+    # Step 2: Auto-enable IBKR if not already enabled
+    try:
+        from db.queries import get_app_settings, set_app_setting
+        cfg = get_app_settings()
+        ibkr_enabled = cfg.get("ibkr_enabled", "0")
+        if ibkr_enabled == "0":
+            print("[Startup] Auto-enabling IBKR...")
+            set_app_setting("ibkr_enabled", "1")
+            print("[Startup] IBKR enabled ✓")
+        else:
+            print("[Startup] IBKR already enabled ✓")
+
+        # Log IBKR connection settings
+        host = cfg.get("ibkr_host", "127.0.0.1")
+        port = cfg.get("ibkr_port", "4002")
+        print(f"[Startup] IBKR will connect to {host}:{port}")
+    except Exception as e:
+        print(f"[Startup] Warning: Could not auto-enable IBKR: {e}")
+
+    # Step 3: Start background tasks
+    print("[Startup] Starting background tasks...")
     asyncio.create_task(broadcaster_loop())
     from ibkr.client import ibkr_keepalive_loop
     asyncio.create_task(ibkr_keepalive_loop())
+    print("[Startup] All systems ready ✓")
 
 
 # ============================================================================
