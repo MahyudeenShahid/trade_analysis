@@ -94,7 +94,7 @@ async def place_order(
                 f"{req.qty} {req.ticker} (attempt {attempt + 1}/{max_retries})"
             )
 
-            # Wait for terminal status
+            # Wait for terminal status with timeout
             deadline = asyncio.get_event_loop().time() + ORDER_FILL_TIMEOUT
             while asyncio.get_event_loop().time() < deadline:
                 await asyncio.sleep(0.5)
@@ -114,12 +114,22 @@ async def place_order(
                     retries=attempt,
                 )
             else:
+                # Cancel unfilled order to prevent it staying open in IBKR
+                if status not in ("ApiCancelled", "Cancelled", "Inactive"):
+                    try:
+                        ib.cancelOrder(trade.order)
+                        logger.info(f"[IBKR] Cancelled unfilled order {trade.order.orderId} (status was {status})")
+                        # Wait briefly for cancellation to process
+                        await asyncio.sleep(0.5)
+                    except Exception as cancel_err:
+                        logger.warning(f"[IBKR] Failed to cancel order: {cancel_err}")
+
                 last_error = f"Order ended with status: {status}"
                 logger.warning(f"[IBKR] {last_error} (attempt {attempt + 1}/{max_retries})")
 
         except Exception as e:
-            last_error = str(e)
-            logger.error(f"[IBKR] place_order attempt {attempt + 1}/{max_retries} failed: {e}")
+            last_error = _parse_ibkr_error(str(e))
+            logger.error(f"[IBKR] place_order attempt {attempt + 1}/{max_retries} failed: {last_error}")
 
         if attempt < max_retries - 1:
             logger.info(f"[IBKR] Retrying in {retry_delay}s …")
@@ -370,6 +380,33 @@ def _ib_async_available() -> bool:
         return True
     except ImportError:
         return False
+
+
+def _parse_ibkr_error(error_str: str) -> str:
+    """Parse IBKR error codes and return human-readable message.
+
+    Official error codes: https://interactivebrokers.github.io/tws-api/message_codes.html
+    """
+    error_map = {
+        "110": "Price out of range - limit price may be too far from market",
+        "200": "No security definition found for the request",
+        "201": "Order rejected - contract or order invalid",
+        "202": "Order cancelled - unable to cancel",
+        "321": "Error validating request - check contract/order details",
+        "354": "Requested market data is not subscribed",
+        "404": "Order ID not found",
+        "434": "Order size does not comply with market rules",
+        "10147": "OrderId must be specified for modify",
+        "10148": "Can't modify a filled order",
+        "2104": "Market data farm connection is OK (info only)",
+        "2106": "HMDS data farm connection is OK (info only)",
+    }
+
+    for code, msg in error_map.items():
+        if code in error_str:
+            return f"[IBKR Error {code}] {msg}"
+
+    return error_str
 
 
 # Module-level NAV cache (updated by account background task if needed)

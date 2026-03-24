@@ -41,6 +41,8 @@ async def connect(host: str = "127.0.0.1", port: int = 4002, client_id: int = 1)
         if ib.isConnected():
             return True
         await ib.connectAsync(host, port, clientId=client_id, timeout=15)
+        # Request next valid order ID (IBKR best practice)
+        ib.reqIds(-1)
         _connected = True
         logger.info(f"[IBKR] Connected to {host}:{port} clientId={client_id}")
         return True
