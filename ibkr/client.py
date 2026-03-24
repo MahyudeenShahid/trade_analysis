@@ -77,7 +77,12 @@ async def ibkr_keepalive_loop():
         try:
             from db.queries import get_app_settings
             cfg = get_app_settings()
-            if cfg.get("ibkr_enabled", "0") == "1":
+            ibkr_enabled_raw = cfg.get("ibkr_enabled", "0")
+            if isinstance(ibkr_enabled_raw, str):
+                ibkr_enabled = ibkr_enabled_raw.strip().lower() in ("1", "true", "yes", "on")
+            else:
+                ibkr_enabled = bool(ibkr_enabled_raw)
+            if ibkr_enabled:
                 if not is_connected():
                     host = cfg.get("ibkr_host", "127.0.0.1")
                     port = int(cfg.get("ibkr_port", "4002"))

@@ -63,10 +63,16 @@ async def broadcaster_loop():
 
                     # update trader auto signals if worker produced price/ticker
                     try:
-                        trend = last.get('trend') or ''
+                        raw_trend = last.get('trend') or ''
+                        trend = str(raw_trend).strip().lower()
+                        if trend in ('uptrend', 'bullish', 'rise', 'rising'):
+                            trend = 'up'
+                        elif trend in ('downtrend', 'bearish', 'fall', 'falling'):
+                            trend = 'down'
+
                         price = last.get('price') or last.get('price_value') or None
                         ticker = last.get('ticker') or None
-                        if price is not None and ticker:
+                        if price is not None:
                             rule_enabled = False
                             rule2_enabled = False
                             rule3_enabled = False
@@ -95,6 +101,9 @@ async def broadcaster_loop():
                             rule9_window = None
                             for bot in bot_list:
                                 try:
+                                    bot_ticker = bot.get('ticker') or ticker
+                                    if not bot_ticker:
+                                        continue
                                     trading_paused = bool(bot.get('trading_paused'))
                                     rule_enabled = bool(bot.get('rule_1_enabled'))
                                     rule2_enabled = bool(bot.get('rule_2_enabled'))
@@ -141,7 +150,7 @@ async def broadcaster_loop():
                                     # the history list has just been compacted by the 1000-item
                                     # cap (after trimming before==after by length, breaking detection).
                                     before_total = trader.core._total_logged
-                                    trader.on_signal(trend, price, ticker, auto=True, rule_1_enabled=rule_enabled, take_profit_amount=tp_amount, rule_2_enabled=rule2_enabled, stop_loss_amount=sl_amount, rule_3_enabled=rule3_enabled, rule_3_drop_count=rule3_drop, rule_4_enabled=rule4_enabled, rule_4_start_time=rule4_start, rule_4_end_time=rule4_end, rule_4_days=rule4_days, rule_5_enabled=rule5_enabled, rule_5_down_minutes=rule5_down, rule_5_reversal_amount=rule5_reversal, rule_5_scalp_amount=rule5_scalp, rule_6_enabled=rule6_enabled, rule_6_down_minutes=rule6_down, rule_6_profit_amount=rule6_profit, rule_7_enabled=rule7_enabled, rule_7_up_minutes=rule7_up, rule_8_enabled=rule8_enabled, rule_8_buy_offset=rule8_buy, rule_8_sell_offset=rule8_sell, rule_9_enabled=rule9_enabled, rule_9_amount=rule9_amount, rule_9_flips=rule9_flips, rule_9_window_minutes=rule9_window, default_trade_enabled=default_trade, bot_id=bot_id, bot_name=bot_name)
+                                    trader.on_signal(trend, price, bot_ticker, auto=True, rule_1_enabled=rule_enabled, take_profit_amount=tp_amount, rule_2_enabled=rule2_enabled, stop_loss_amount=sl_amount, rule_3_enabled=rule3_enabled, rule_3_drop_count=rule3_drop, rule_4_enabled=rule4_enabled, rule_4_start_time=rule4_start, rule_4_end_time=rule4_end, rule_4_days=rule4_days, rule_5_enabled=rule5_enabled, rule_5_down_minutes=rule5_down, rule_5_reversal_amount=rule5_reversal, rule_5_scalp_amount=rule5_scalp, rule_6_enabled=rule6_enabled, rule_6_down_minutes=rule6_down, rule_6_profit_amount=rule6_profit, rule_7_enabled=rule7_enabled, rule_7_up_minutes=rule7_up, rule_8_enabled=rule8_enabled, rule_8_buy_offset=rule8_buy, rule_8_sell_offset=rule8_sell, rule_9_enabled=rule9_enabled, rule_9_amount=rule9_amount, rule_9_flips=rule9_flips, rule_9_window_minutes=rule9_window, default_trade_enabled=default_trade, bot_id=bot_id, bot_name=bot_name)
                                     after_total = trader.core._total_logged
                                     new_trade_count = after_total - before_total
                                     if new_trade_count > 0:
@@ -244,13 +253,16 @@ async def broadcaster_loop():
                 from ibkr.client import is_connected as ibkr_is_connected
                 from ibkr.order_book import get_all_snapshots
                 from db.queries import get_live_orders
+                from ibkr.account import get_account_summary
                 payload['ibkr_connected'] = ibkr_is_connected()
                 payload['order_books'] = get_all_snapshots()
                 payload['live_orders'] = get_live_orders(limit=20)
+                payload['ibkr_account'] = await get_account_summary() if payload['ibkr_connected'] else {}
             except Exception:
                 payload['ibkr_connected'] = False
                 payload['order_books'] = {}
                 payload['live_orders'] = []
+                payload['ibkr_account'] = {}
 
             await manager.broadcast(json.dumps(payload))
         except Exception as e:
