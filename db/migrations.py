@@ -225,6 +225,8 @@ def init_db():
             ("max_retries", "INTEGER DEFAULT 3"),
             ("min_trade_dollars", "REAL DEFAULT 0"),
             ("validate_conditions_on_retry", "INTEGER DEFAULT 1"),
+            # Smart order management
+            ("cancel_on_trend_reversal", "INTEGER DEFAULT 0"),
         ]
         for col, typ in bot_additions:
             if col not in existing_bots:
@@ -242,6 +244,18 @@ def init_db():
         if "screenshot_path" not in existing_live_orders_cols:
             try:
                 cur.execute("ALTER TABLE live_orders ADD COLUMN screenshot_path TEXT")
+            except Exception:
+                pass
+        # Add profit column for P&L tracking
+        if "profit" not in existing_live_orders_cols:
+            try:
+                cur.execute("ALTER TABLE live_orders ADD COLUMN profit REAL")
+            except Exception:
+                pass
+        # Add buy_order_id to link sells to their corresponding buys
+        if "buy_order_id" not in existing_live_orders_cols:
+            try:
+                cur.execute("ALTER TABLE live_orders ADD COLUMN buy_order_id INTEGER")
             except Exception:
                 pass
     except Exception:

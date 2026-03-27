@@ -576,8 +576,8 @@ def save_live_order(order: dict) -> int:
             """INSERT INTO live_orders
                (ts, hwnd, bot_id, ticker, direction, order_type, qty, price,
                 limit_price, ibkr_order_id, status, fill_price, fill_ts,
-                error_msg, retries, trade_ref_id, meta, screenshot_path)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                error_msg, retries, trade_ref_id, meta, screenshot_path, profit, buy_order_id)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 order.get("ts"),
                 order.get("hwnd"),
@@ -597,6 +597,8 @@ def save_live_order(order: dict) -> int:
                 order.get("trade_ref_id"),
                 json.dumps(order.get("meta", {})) if order.get("meta") is not None else None,
                 order.get("screenshot_path"),
+                order.get("profit"),
+                order.get("buy_order_id"),
             ),
         )
         row_id = cur.lastrowid
@@ -613,6 +615,8 @@ def update_live_order_status(
     error_msg=None,
     ibkr_order_id=None,
     retries=None,
+    profit=None,
+    buy_order_id=None,
 ):
     """Update status fields on an existing live_orders row."""
     with DB_LOCK:
@@ -625,25 +629,48 @@ def update_live_order_status(
                    fill_ts = COALESCE(?, fill_ts),
                    error_msg = COALESCE(?, error_msg),
                    ibkr_order_id = COALESCE(?, ibkr_order_id),
-                   retries = COALESCE(?, retries)
+                   retries = COALESCE(?, retries),
+                   profit = COALESCE(?, profit),
+                   buy_order_id = COALESCE(?, buy_order_id)
                WHERE id = ?""",
-            (status, fill_price, fill_ts, error_msg, ibkr_order_id, retries, order_id),
+            (status, fill_price, fill_ts, error_msg, ibkr_order_id, retries, profit, buy_order_id, order_id),
         )
         conn.commit()
         conn.close()
 
 
-def get_live_orders(hwnd: int = None, limit: int = 50) -> list:
-    """Return recent live_orders rows, optionally filtered by hwnd."""
+def get_live_orders(hwnd: int = None, bot_id: str = None, limit: int = 50) -> list:
+    """Return recent live_orders rows, optionally filtered by hwnd or bot_id."""
+    if hwnd is not None and bot_id is not None:
+        return query_records(
+            "SELECT * FROM live_orders WHERE hwnd = ? AND bot_id = ? ORDER BY ts DESC LIMIT ?",
+            (int(hwnd), bot_id, limit),
+        )
     if hwnd is not None:
         return query_records(
             "SELECT * FROM live_orders WHERE hwnd = ? ORDER BY ts DESC LIMIT ?",
             (int(hwnd), limit),
         )
+    if bot_id is not None:
+        return query_records(
+            "SELECT * FROM live_orders WHERE bot_id = ? ORDER BY ts DESC LIMIT ?",
+            (bot_id, limit),
+        )
     return query_records(
         "SELECT * FROM live_orders ORDER BY ts DESC LIMIT ?",
         (limit,),
     )
+
+
+def get_last_buy_order(hwnd: int, ticker: str) -> dict:
+    """Get the most recent filled BUY order for a ticker/hwnd to calculate P&L on sell."""
+    rows = query_records(
+        """SELECT * FROM live_orders
+           WHERE hwnd = ? AND ticker = ? AND direction = 'buy' AND status = 'filled'
+           ORDER BY ts DESC LIMIT 1""",
+        (int(hwnd), ticker),
+    )
+    return rows[0] if rows else None
 
 
 __all__ = [
@@ -658,4 +685,5 @@ __all__ = [
     "save_live_order",
     "update_live_order_status",
     "get_live_orders",
+    "get_last_buy_order",
 ]

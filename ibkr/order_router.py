@@ -28,6 +28,8 @@ async def place_order(
     retry_delay: float = 5.0,
     max_retries: int = DEFAULT_MAX_RETRIES,
     condition_validator: Optional[Callable[[], bool]] = None,
+    trend_checker: Optional[Callable[[], Optional[str]]] = None,
+    cancel_on_trend_reversal: bool = False,
 ) -> IBKROrderResult:
     """Place a single order via IBKR with up to max_retries attempts.
 
@@ -38,6 +40,10 @@ async def place_order(
         condition_validator: Optional callback that returns True if conditions
                             still valid for this order. If it returns False,
                             retry is skipped and order is cancelled.
+        trend_checker: Optional callback that returns current trend ("up"/"down"/None).
+                      Used with cancel_on_trend_reversal.
+        cancel_on_trend_reversal: If True, cancel pending order when trend reverses
+                                  (BUY cancelled if trend goes down, SELL cancelled if trend goes up).
 
     Returns IBKROrderResult(ok=True) on fill, IBKROrderResult(ok=False) on failure.
     """
@@ -95,12 +101,39 @@ async def place_order(
             )
 
             # Wait for terminal status with timeout
+            # Also check for trend reversal if enabled
             deadline = asyncio.get_event_loop().time() + ORDER_FILL_TIMEOUT
+            trend_cancelled = False
             while asyncio.get_event_loop().time() < deadline:
                 await asyncio.sleep(0.5)
                 status = trade.orderStatus.status
                 if status in ("Filled", "ApiCancelled", "Cancelled", "Inactive"):
                     break
+
+                # Check for trend reversal cancellation
+                if cancel_on_trend_reversal and trend_checker is not None and status not in ("Filled",):
+                    try:
+                        current_trend = trend_checker()
+                        if current_trend:
+                            # BUY order should be cancelled if trend is now "down"
+                            # SELL order should be cancelled if trend is now "up"
+                            should_cancel = (
+                                (req.direction.lower() == "buy" and current_trend.lower() == "down") or
+                                (req.direction.lower() == "sell" and current_trend.lower() == "up")
+                            )
+                            if should_cancel:
+                                logger.info(
+                                    f"[IBKR] Trend reversed to '{current_trend}' — cancelling {req.direction.upper()} order"
+                                )
+                                try:
+                                    ib.cancelOrder(trade.order)
+                                    trend_cancelled = True
+                                    await asyncio.sleep(0.5)
+                                except Exception as cancel_err:
+                                    logger.warning(f"[IBKR] Failed to cancel on trend reversal: {cancel_err}")
+                                break
+                    except Exception as tc_err:
+                        logger.debug(f"[IBKR] Trend checker error (non-fatal): {tc_err}")
 
             status = trade.orderStatus.status
             if status == "Filled":
@@ -111,6 +144,13 @@ async def place_order(
                     ibkr_order_id=trade.order.orderId,
                     fill_price=fill_price,
                     fill_ts=datetime.utcnow().isoformat() + "Z",
+                    retries=attempt,
+                )
+            elif trend_cancelled:
+                # Trend reversed — don't retry, just return failure
+                return IBKROrderResult(
+                    ok=False,
+                    error_msg="Order cancelled — trend reversed",
                     retries=attempt,
                 )
             else:
@@ -212,6 +252,7 @@ async def handle_trade_event(trade_dict: dict, bot_row: dict, hwnd: int, get_cur
         retry_delay = float(bot_row.get("retry_delay_secs") or cfg.get("retry_delay_secs") or 5.0)
         max_retries = int(bot_row.get("max_retries") or DEFAULT_MAX_RETRIES)
         validate_on_retry = bool(bot_row.get("validate_conditions_on_retry", 1))
+        cancel_on_reversal = bool(bot_row.get("cancel_on_trend_reversal", 0))
 
         req = IBKROrderRequest(
             ticker=ticker,
@@ -298,13 +339,46 @@ async def handle_trade_event(trade_dict: dict, bot_row: dict, hwnd: int, get_cur
                     return True  # On error, allow retry
             condition_validator = validator
 
+        # Build trend checker for cancel-on-reversal
+        # Maps signal to trend: "buy" → "up", "sell" → "down"
+        trend_checker = None
+        if cancel_on_reversal and get_current_signal is not None:
+            def check_trend():
+                """Return current trend based on signal."""
+                try:
+                    current = get_current_signal()
+                    if current is None:
+                        return None
+                    return "up" if current.lower() == "buy" else "down"
+                except Exception:
+                    return None
+            trend_checker = check_trend
+
         # Place the order
         result = await place_order(
             req,
             retry_delay=retry_delay,
             max_retries=max_retries,
             condition_validator=condition_validator,
+            trend_checker=trend_checker,
+            cancel_on_trend_reversal=cancel_on_reversal,
         )
+
+        # Calculate profit for SELL orders
+        profit = None
+        buy_order_id = None
+        if result.ok and direction.lower() == "sell" and result.fill_price:
+            try:
+                from db.queries import get_last_buy_order
+                last_buy = get_last_buy_order(hwnd, ticker)
+                if last_buy and last_buy.get("fill_price"):
+                    buy_price = float(last_buy["fill_price"])
+                    sell_price = float(result.fill_price)
+                    profit = (sell_price - buy_price) * qty
+                    buy_order_id = last_buy.get("id")
+                    logger.info(f"[IBKR] P&L calculated: ${profit:.2f} (buy @ {buy_price:.2f}, sell @ {sell_price:.2f})")
+            except Exception as pnl_err:
+                logger.warning(f"[IBKR] P&L calculation failed (non-fatal): {pnl_err}")
 
         # Update DB row with result
         update_live_order_status(
@@ -315,6 +389,8 @@ async def handle_trade_event(trade_dict: dict, bot_row: dict, hwnd: int, get_cur
             error_msg=result.error_msg,
             ibkr_order_id=result.ibkr_order_id,
             retries=result.retries,
+            profit=profit,
+            buy_order_id=buy_order_id,
         )
 
         if result.ok:

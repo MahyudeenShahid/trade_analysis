@@ -198,7 +198,21 @@ async def broadcaster_loop():
 
                                                     if live_enabled:
                                                         from ibkr.order_router import handle_trade_event as ibkr_handle
-                                                        asyncio.create_task(ibkr_handle(ev, bot_row_for_order, int(hwnd)))
+                                                        # Create callback to get current signal for trend reversal detection
+                                                        # Captures trader and current context
+                                                        def make_signal_getter(t, tr):
+                                                            def get_signal():
+                                                                try:
+                                                                    # Check if trader has current position and trend
+                                                                    state = t.core.get_state(tr) if hasattr(t.core, 'get_state') else None
+                                                                    if state and hasattr(state, 'last_direction'):
+                                                                        return state.last_direction
+                                                                    return None
+                                                                except Exception:
+                                                                    return None
+                                                            return get_signal
+                                                        signal_getter = make_signal_getter(trader, bot_ticker)
+                                                        asyncio.create_task(ibkr_handle(ev, bot_row_for_order, int(hwnd), signal_getter))
                                                 except Exception:
                                                     pass
                                         except Exception:
