@@ -270,7 +270,7 @@ async def broadcaster_loop():
                 from ibkr.account import get_account_summary
                 payload['ibkr_connected'] = ibkr_is_connected()
                 payload['order_books'] = get_all_snapshots()
-                payload['live_orders'] = get_live_orders(limit=20)
+                payload['live_orders'] = get_live_orders(limit=None)
                 payload['ibkr_account'] = await get_account_summary() if payload['ibkr_connected'] else {}
             except Exception:
                 payload['ibkr_connected'] = False

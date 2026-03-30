@@ -639,27 +639,47 @@ def update_live_order_status(
         conn.close()
 
 
-def get_live_orders(hwnd: int = None, bot_id: str = None, limit: int = 50) -> list:
-    """Return recent live_orders rows, optionally filtered by hwnd or bot_id."""
-    if hwnd is not None and bot_id is not None:
-        return query_records(
-            "SELECT * FROM live_orders WHERE hwnd = ? AND bot_id = ? ORDER BY ts DESC LIMIT ?",
-            (int(hwnd), bot_id, limit),
-        )
+def get_live_orders(hwnd: int = None, bot_id: str = None, limit: int = None, offset: int = 0) -> list:
+    """Return live_orders rows, optionally filtered by hwnd/bot_id and paginated by limit/offset."""
+    where = []
+    params = []
     if hwnd is not None:
-        return query_records(
-            "SELECT * FROM live_orders WHERE hwnd = ? ORDER BY ts DESC LIMIT ?",
-            (int(hwnd), limit),
-        )
+        where.append("hwnd = ?")
+        params.append(int(hwnd))
     if bot_id is not None:
-        return query_records(
-            "SELECT * FROM live_orders WHERE bot_id = ? ORDER BY ts DESC LIMIT ?",
-            (bot_id, limit),
-        )
-    return query_records(
-        "SELECT * FROM live_orders ORDER BY ts DESC LIMIT ?",
-        (limit,),
-    )
+        where.append("bot_id = ?")
+        params.append(bot_id)
+
+    sql = "SELECT * FROM live_orders"
+    if where:
+        sql += " WHERE " + " AND ".join(where)
+    sql += " ORDER BY ts DESC"
+
+    if limit is not None:
+        lim = max(1, int(limit))
+        off = max(0, int(offset or 0))
+        sql += " LIMIT ? OFFSET ?"
+        params.extend([lim, off])
+
+    return query_records(sql, tuple(params))
+
+
+def count_live_orders(hwnd: int = None, bot_id: str = None) -> int:
+    """Return total count of live_orders for optional hwnd/bot_id filters."""
+    where = []
+    params = []
+    if hwnd is not None:
+        where.append("hwnd = ?")
+        params.append(int(hwnd))
+    if bot_id is not None:
+        where.append("bot_id = ?")
+        params.append(bot_id)
+
+    sql = "SELECT COUNT(*) as count FROM live_orders"
+    if where:
+        sql += " WHERE " + " AND ".join(where)
+    rows = query_records(sql, tuple(params))
+    return int(rows[0]["count"]) if rows else 0
 
 
 def get_last_buy_order(hwnd: int, ticker: str) -> dict:
@@ -685,5 +705,6 @@ __all__ = [
     "save_live_order",
     "update_live_order_status",
     "get_live_orders",
+    "count_live_orders",
     "get_last_buy_order",
 ]

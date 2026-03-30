@@ -2,11 +2,13 @@
 
 import asyncio
 import logging
+from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import JSONResponse
 
 from api.dependencies import require_api_key
-from db.queries import get_app_settings, set_app_setting, get_live_orders
+from db.queries import get_app_settings, set_app_setting, get_live_orders, count_live_orders
 
 logger = logging.getLogger(__name__)
 
@@ -106,9 +108,17 @@ def ibkr_update_settings(payload: dict, _auth=Depends(require_api_key)):
 # ---------------------------------------------------------------------------
 
 @router.get("/orders")
-def ibkr_orders(hwnd: int = None, bot_id: str = None, limit: int = 100, _auth=Depends(require_api_key)):
-    """Return recent live orders, optionally filtered by hwnd or bot_id."""
-    return {"orders": get_live_orders(hwnd=hwnd, bot_id=bot_id, limit=limit)}
+def ibkr_orders(
+    hwnd: int = None,
+    bot_id: str = None,
+    limit: Optional[int] = None,
+    offset: int = 0,
+    _auth=Depends(require_api_key),
+):
+    """Return live orders with optional filters and optional pagination."""
+    total = count_live_orders(hwnd=hwnd, bot_id=bot_id)
+    orders = get_live_orders(hwnd=hwnd, bot_id=bot_id, limit=limit, offset=offset)
+    return JSONResponse(content={"orders": orders}, headers={"X-Total-Count": str(total)})
 
 
 # ---------------------------------------------------------------------------
