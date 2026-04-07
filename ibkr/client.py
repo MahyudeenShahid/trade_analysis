@@ -17,8 +17,77 @@ except ImportError:
     _ib_available = False
 
 # Module-level singleton
-ib: "IB | None" = IB() if _ib_available else None
+ib = IB() if _ib_available else None
 _connected = False
+_error_handler_registered = False
+
+
+def _attach_error_handler_once():
+    """Attach a global IB error handler once per process.
+
+    Handles official market-data recovery cases:
+    - 1101: data lost after reconnect -> resubscribe market-data requests
+    - 316: market depth halted -> resubscribe depth
+    - 317: market depth reset -> clear DOM cache before applying updates
+    """
+    global _error_handler_registered
+
+    if _error_handler_registered or ib is None:
+        return
+    if not hasattr(ib, "errorEvent"):
+        return
+
+    def _on_ib_error(*args):
+        try:
+            req_id = args[0] if len(args) > 0 else None
+            code = args[1] if len(args) > 1 else None
+            msg = args[2] if len(args) > 2 else ""
+        except Exception:
+            req_id = None
+            code = None
+            msg = ""
+
+        try:
+            code_int = int(code) if code is not None else None
+        except Exception:
+            code_int = None
+
+        if code_int in (1101, 316):
+            logger.warning(
+                "[IBKR] Error %s (reqId=%s): %s. Re-subscribing all depth feeds.",
+                code_int,
+                req_id,
+                msg,
+            )
+            try:
+                from .order_book import resubscribe_all
+                asyncio.create_task(resubscribe_all(force=True))
+            except Exception as e:
+                logger.warning(f"[IBKR] Could not trigger depth resubscribe: {e}")
+        elif code_int == 317:
+            logger.warning(
+                "[IBKR] Error 317 (reqId=%s): %s. Clearing cached depth books.",
+                req_id,
+                msg,
+            )
+            try:
+                from .order_book import clear_all_depth_cache
+                clear_all_depth_cache()
+            except Exception as e:
+                logger.warning(f"[IBKR] Could not clear depth cache after 317: {e}")
+        elif code_int in (309, 354, 10090, 10186, 10197):
+            logger.warning(
+                "[IBKR] Market-data warning/error %s (reqId=%s): %s",
+                code_int,
+                req_id,
+                msg,
+            )
+
+    try:
+        ib.errorEvent += _on_ib_error
+        _error_handler_registered = True
+    except Exception as e:
+        logger.warning(f"[IBKR] Failed to attach error handler: {e}")
 
 
 def is_connected() -> bool:
@@ -42,6 +111,7 @@ async def connect(host: str = "127.0.0.1", port: int = 4002, client_id: int = 1)
             return True
         await ib.connectAsync(host, port, clientId=client_id, timeout=15)
         _connected = True
+        _attach_error_handler_once()
         logger.info(f"[IBKR] Connected to {host}:{port} clientId={client_id}")
         return True
     except Exception as e:

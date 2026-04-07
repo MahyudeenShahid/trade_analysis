@@ -67,9 +67,16 @@ async def ibkr_connect(payload: dict = None, _auth=Depends(require_api_key)):
 
 
 @router.post("/disconnect")
-def ibkr_disconnect(_auth=Depends(require_api_key)):
+async def ibkr_disconnect(_auth=Depends(require_api_key)):
     """Disconnect from IB Gateway."""
+    from ibkr.order_book import unsubscribe_all
     from ibkr.client import disconnect
+
+    # Clear depth subscriptions so reconnect can cleanly resubscribe.
+    try:
+        await unsubscribe_all()
+    except Exception as e:
+        logger.warning(f"[IBKR] Failed to clear order-book subscriptions on disconnect: {e}")
 
     disconnect()
     return {"ok": True, "message": "Disconnected"}
@@ -180,12 +187,51 @@ def ibkr_order_book(ticker: str, _auth=Depends(require_api_key)):
 
 
 @router.post("/order_book/{ticker}/subscribe")
-async def ibkr_subscribe_depth(ticker: str, _auth=Depends(require_api_key)):
+async def ibkr_subscribe_depth(ticker: str, force: bool = False, _auth=Depends(require_api_key)):
     """Subscribe to live Level 2 market depth for a ticker."""
+    from ibkr.client import is_connected
     from ibkr.order_book import subscribe_depth
 
-    await subscribe_depth(ticker.upper())
-    return {"ok": True, "ticker": ticker.upper()}
+    if not is_connected():
+        raise HTTPException(status_code=503, detail="Not connected to IB Gateway")
+
+    ok = await subscribe_depth(ticker.upper(), force=force)
+    if not ok:
+        raise HTTPException(status_code=502, detail=f"Failed to subscribe depth for {ticker.upper()}")
+
+    return {"ok": True, "ticker": ticker.upper(), "force": force}
+
+
+@router.get("/order_book/exchanges")
+async def ibkr_order_book_exchanges(_auth=Depends(require_api_key)):
+    """Return exchanges that provide market depth for this account/session."""
+    from ibkr.client import ib, is_connected
+
+    if not is_connected() or ib is None:
+        raise HTTPException(status_code=503, detail="Not connected to IB Gateway")
+
+    try:
+        if hasattr(ib, "reqMktDepthExchangesAsync"):
+            rows = await ib.reqMktDepthExchangesAsync()
+        else:
+            rows = ib.reqMktDepthExchanges()
+
+        exchanges = []
+        for r in rows or []:
+            exchanges.append(
+                {
+                    "exchange": getattr(r, "exchange", ""),
+                    "sec_type": getattr(r, "secType", ""),
+                    "listing_exch": getattr(r, "listingExch", ""),
+                    "service_data_type": getattr(r, "serviceDataType", ""),
+                    "agg_group": getattr(r, "aggGroup", None),
+                }
+            )
+
+        return {"ok": True, "exchanges": exchanges}
+    except Exception as e:
+        logger.error(f"[IBKR] reqMktDepthExchanges failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 # ---------------------------------------------------------------------------
