@@ -165,4 +165,4 @@ If you use a free ngrok tunnel, new visitors will see a browser warning/intersti
 
 ---
 
-Developed by [Mahyudeen Shahid](https://mahyudeen.me/) with ❤
+Developed by [Mahyudeen Shahid](https://mahyudeen.netlify.app/) with ❤
