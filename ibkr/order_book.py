@@ -11,7 +11,7 @@ Usage:
 import asyncio
 import logging
 import time
-from typing import Dict
+from typing import Dict, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -19,8 +19,26 @@ logger = logging.getLogger(__name__)
 _depth_cache: Dict[str, dict] = {}
 # ticker → ib Ticker object returned by reqMktDepth
 _subscriptions: Dict[str, object] = {}
+# ticker -> reqId used for reqMktDepth
+_subscription_req_ids: Dict[str, int] = {}
+# ticker -> exchange used for reqMktDepth subscription
+_subscription_exchange: Dict[str, str] = {}
+# ticker -> isSmartDepth flag used for reqMktDepth
+_subscription_smart_depth: Dict[str, bool] = {}
+# ticker -> ib Ticker object returned by reqMktData (best bid/ask fallback)
+_top_subscriptions: Dict[str, object] = {}
+# ticker -> reqId used for reqMktData fallback subscription
+_top_subscription_req_ids: Dict[str, int] = {}
+# reqId -> ticker mapping for error correlation
+_req_id_to_ticker: Dict[int, str] = {}
 # ticker → unix timestamp of latest depth update
 _depth_last_update: Dict[str, float] = {}
+# ticker -> latest top-of-book (bid/ask) update
+_top_book_cache: Dict[str, dict] = {}
+# ticker -> last IB API error seen for this depth stream
+_last_error_by_ticker: Dict[str, dict] = {}
+# most recent IB API error across all requests
+_last_error_global: dict = {}
 
 _STALE_SUB_SECONDS = 20.0
 
@@ -35,7 +53,202 @@ def get_all_snapshots() -> dict:
     return dict(_depth_cache)
 
 
-async def subscribe_depth(ticker: str, exchange: str = "SMART", num_rows: int = 20, force: bool = False) -> bool:
+def _safe_positive_float(value):
+    """Parse value into a positive float or None."""
+    try:
+        num = float(value)
+    except Exception:
+        return None
+    return num if num > 0 else None
+
+
+def _safe_non_negative_float(value, default: float = 0.0) -> float:
+    """Parse value into a non-negative float with default fallback."""
+    try:
+        num = float(value)
+    except Exception:
+        return default
+    return num if num >= 0 else default
+
+
+def _build_bbo_rows(top_book: Optional[dict]):
+    """Convert best-bid/ask into depth-like rows for UI compatibility."""
+    if not isinstance(top_book, dict):
+        return [], []
+
+    bid = _safe_positive_float(top_book.get("bid"))
+    ask = _safe_positive_float(top_book.get("ask"))
+    bid_size = _safe_non_negative_float(top_book.get("bid_size"), default=0.0)
+    ask_size = _safe_non_negative_float(top_book.get("ask_size"), default=0.0)
+
+    bids = [{"price": bid, "size": bid_size, "mm": "BBO"}] if bid is not None else []
+    asks = [{"price": ask, "size": ask_size, "mm": "BBO"}] if ask is not None else []
+    return bids, asks
+
+
+def _cancel_top_of_book_subscription(ticker: str):
+    """Cancel reqMktData fallback stream for ticker and clear its cache."""
+    from .client import ib
+
+    sub = _top_subscriptions.pop(ticker, None)
+    req_id = _top_subscription_req_ids.pop(ticker, None)
+    if req_id is not None:
+        _req_id_to_ticker.pop(req_id, None)
+    _top_book_cache.pop(ticker, None)
+
+    if sub is not None and ib is not None:
+        try:
+            ib.cancelMktData(sub.contract)
+        except Exception:
+            pass
+
+
+def _ensure_top_of_book_subscription(ticker: str, contract):
+    """Ensure reqMktData best-bid/ask fallback is active for this ticker."""
+    from .client import ib, is_connected
+
+    if ticker in _top_subscriptions:
+        return
+    if ib is None or not is_connected():
+        return
+
+    try:
+        # Keep this lightweight: no generic ticks, no snapshot mode.
+        top_ticker = ib.reqMktData(contract, "", False, False)
+    except Exception as e:
+        logger.debug("[IBKR OrderBook] Could not start top-of-book fallback for %s: %s", ticker, e)
+        return
+
+    _top_subscriptions[ticker] = top_ticker
+
+    # Correlate reqId -> ticker for fallback stream errors as well.
+    try:
+        req_map = getattr(getattr(ib, "wrapper", None), "ticker2ReqId", None)
+        mkt_data_map = req_map.get("mktData", {}) if hasattr(req_map, "get") else {}
+        req_id_raw = mkt_data_map.get(top_ticker) if hasattr(mkt_data_map, "get") else None
+        if req_id_raw is not None:
+            req_id = int(req_id_raw)
+            _top_subscription_req_ids[ticker] = req_id
+            _req_id_to_ticker[req_id] = ticker
+    except Exception:
+        pass
+
+    def on_top_update(ticker_obj):
+        bid = _safe_positive_float(getattr(ticker_obj, "bid", None))
+        ask = _safe_positive_float(getattr(ticker_obj, "ask", None))
+        bid_size = _safe_non_negative_float(getattr(ticker_obj, "bidSize", None), default=0.0)
+        ask_size = _safe_non_negative_float(getattr(ticker_obj, "askSize", None), default=0.0)
+
+        if bid is None and ask is None:
+            return
+
+        ts = time.time()
+        top_book = {
+            "bid": bid,
+            "ask": ask,
+            "bid_size": bid_size,
+            "ask_size": ask_size,
+            "ts": ts,
+        }
+        _top_book_cache[ticker] = top_book
+
+        # Only overwrite cached rows while L2 is absent; once true DOM appears,
+        # keep L2 as authoritative.
+        snap = _depth_cache.get(ticker) or {}
+        has_l2 = (
+            str(snap.get("source") or "").upper() == "L2"
+            and bool((snap.get("bids") or []) or (snap.get("asks") or []))
+        )
+        if has_l2:
+            return
+
+        bids, asks = _build_bbo_rows(top_book)
+        if bids or asks:
+            _depth_cache[ticker] = {"bids": bids, "asks": asks, "source": "BBO"}
+            _depth_last_update[ticker] = ts
+            _last_error_by_ticker.pop(ticker, None)
+
+    top_ticker.updateEvent += on_top_update
+
+
+def resolve_ticker_for_req_id(req_id) -> Optional[str]:
+    """Best-effort resolve of IB reqId back to ticker for depth requests."""
+    try:
+        req_id_int = int(req_id)
+    except Exception:
+        return None
+    return _req_id_to_ticker.get(req_id_int)
+
+
+def record_ib_error(req_id, code, message: str) -> Optional[str]:
+    """Record latest IB API error and associate it to ticker when possible."""
+    global _last_error_global
+
+    try:
+        req_id_int = int(req_id)
+    except Exception:
+        req_id_int = None
+
+    entry = {
+        "req_id": req_id_int,
+        "code": code,
+        "message": str(message or ""),
+        "ts": time.time(),
+    }
+    _last_error_global = entry
+
+    ticker = resolve_ticker_for_req_id(req_id_int) if req_id_int is not None else None
+    if ticker:
+        _last_error_by_ticker[ticker] = entry
+    return ticker
+
+
+def get_depth_diagnostics(ticker: str) -> dict:
+    """Return detailed diagnostics for a ticker depth subscription."""
+    ticker = str(ticker or "").strip().upper()
+    snapshot = get_snapshot(ticker)
+    bids = snapshot.get("bids") or []
+    asks = snapshot.get("asks") or []
+    source = str(snapshot.get("source") or "").upper() or None
+    last_update = _depth_last_update.get(ticker)
+    age = None
+    if last_update:
+        age = round(max(0.0, time.time() - float(last_update)), 3)
+
+    top_book = _top_book_cache.get(ticker)
+    top_book_ts = top_book.get("ts") if isinstance(top_book, dict) else None
+    top_book_age = None
+    if top_book_ts:
+        top_book_age = round(max(0.0, time.time() - float(top_book_ts)), 3)
+
+    return {
+        "ticker": ticker,
+        "subscribed": ticker in _subscriptions,
+        "top_of_book_subscribed": ticker in _top_subscriptions,
+        "req_id": _subscription_req_ids.get(ticker),
+        "top_req_id": _top_subscription_req_ids.get(ticker),
+        "exchange": _subscription_exchange.get(ticker),
+        "is_smart_depth": _subscription_smart_depth.get(ticker),
+        "source": source,
+        "has_depth": bool(bids or asks),
+        "bid_levels": len(bids),
+        "ask_levels": len(asks),
+        "last_update_unix": last_update,
+        "last_update_age_sec": age,
+        "top_of_book": top_book or None,
+        "top_of_book_age_sec": top_book_age,
+        "last_error": _last_error_by_ticker.get(ticker),
+        "last_error_global": _last_error_global or None,
+    }
+
+
+async def subscribe_depth(
+    ticker: str,
+    exchange: str = "SMART",
+    num_rows: int = 5,
+    force: bool = False,
+    is_smart_depth: bool = True,
+) -> bool:
     """Subscribe to Level 2 market depth for a ticker.
 
     Safe to call multiple times for the same ticker.
@@ -46,6 +259,8 @@ async def subscribe_depth(ticker: str, exchange: str = "SMART", num_rows: int = 
     from .client import ib, is_connected
 
     ticker = str(ticker or "").strip().upper()
+    exchange = str(exchange or "SMART").strip().upper()
+    is_smart_depth = bool(is_smart_depth)
     if not ticker:
         return False
 
@@ -70,12 +285,20 @@ async def subscribe_depth(ticker: str, exchange: str = "SMART", num_rows: int = 
     if existing is not None:
         try:
             if ib is not None and is_connected():
-                ib.cancelMktDepth(existing.contract, isSmartDepth=True)
+                prev_smart_depth = _subscription_smart_depth.get(ticker, True)
+                ib.cancelMktDepth(existing.contract, isSmartDepth=bool(prev_smart_depth))
         except Exception:
             pass
+        req_id = _subscription_req_ids.pop(ticker, None)
+        if req_id is not None:
+            _req_id_to_ticker.pop(req_id, None)
+        _subscription_exchange.pop(ticker, None)
+        _subscription_smart_depth.pop(ticker, None)
         _subscriptions.pop(ticker, None)
+        _cancel_top_of_book_subscription(ticker)
         _depth_cache.pop(ticker, None)
         _depth_last_update.pop(ticker, None)
+        _last_error_by_ticker.pop(ticker, None)
 
     if not is_connected() or ib is None:
         logger.warning(f"[IBKR OrderBook] Not connected — cannot subscribe to {ticker}")
@@ -86,23 +309,59 @@ async def subscribe_depth(ticker: str, exchange: str = "SMART", num_rows: int = 
         contract = Stock(ticker, exchange, "USD")
         await ib.qualifyContractsAsync(contract)
 
-        depth_ticker = ib.reqMktDepth(contract, numRows=num_rows, isSmartDepth=True)
+        depth_ticker = ib.reqMktDepth(contract, numRows=num_rows, isSmartDepth=is_smart_depth)
         _subscriptions[ticker] = depth_ticker
+        _subscription_exchange[ticker] = exchange
+        _subscription_smart_depth[ticker] = is_smart_depth
+        _depth_cache.setdefault(ticker, {"bids": [], "asks": [], "source": None})
+
+        # Parallel top-of-book stream provides best-bid/ask fallback when
+        # Level 2 rows are unavailable for this symbol/account/venue.
+        _ensure_top_of_book_subscription(ticker, contract)
+
+        # Correlate IB reqId -> ticker so errorEvent can tell which symbol failed.
+        try:
+            req_map = getattr(getattr(ib, "wrapper", None), "ticker2ReqId", None)
+            mkt_depth_map = req_map.get("mktDepth", {}) if hasattr(req_map, "get") else {}
+            req_id_raw = mkt_depth_map.get(depth_ticker) if hasattr(mkt_depth_map, "get") else None
+            if req_id_raw is not None:
+                req_id = int(req_id_raw)
+                _subscription_req_ids[ticker] = req_id
+                _req_id_to_ticker[req_id] = ticker
+        except Exception:
+            pass
 
         def on_depth_update(ticker_obj):
-            bids = [
+            dom_bids = [
                 {"price": r.price, "size": r.size, "mm": getattr(r, "marketMaker", "")}
                 for r in (ticker_obj.domBids or [])
             ]
-            asks = [
+            dom_asks = [
                 {"price": r.price, "size": r.size, "mm": getattr(r, "marketMaker", "")}
                 for r in (ticker_obj.domAsks or [])
             ]
-            _depth_cache[ticker] = {"bids": bids, "asks": asks}
-            _depth_last_update[ticker] = time.time()
+
+            if dom_bids or dom_asks:
+                bids, asks = dom_bids, dom_asks
+                source = "L2"
+            else:
+                bids, asks = _build_bbo_rows(_top_book_cache.get(ticker))
+                source = "BBO" if (bids or asks) else None
+
+            _depth_cache[ticker] = {"bids": bids, "asks": asks, "source": source}
+            if bids or asks:
+                _depth_last_update[ticker] = time.time()
+            if bids or asks:
+                _last_error_by_ticker.pop(ticker, None)
 
         depth_ticker.updateEvent += on_depth_update
-        logger.info(f"[IBKR OrderBook] Subscribed to depth for {ticker}")
+        logger.info(
+            "[IBKR OrderBook] Subscribed to depth for %s (exchange=%s isSmartDepth=%s rows=%s)",
+            ticker,
+            exchange,
+            is_smart_depth,
+            num_rows,
+        )
         return True
 
     except Exception as e:
@@ -115,11 +374,19 @@ async def unsubscribe_depth(ticker: str):
     from .client import ib
 
     sub = _subscriptions.pop(ticker, None)
+    smart_depth = _subscription_smart_depth.get(ticker, True)
+    req_id = _subscription_req_ids.pop(ticker, None)
+    if req_id is not None:
+        _req_id_to_ticker.pop(req_id, None)
+    _subscription_exchange.pop(ticker, None)
+    _subscription_smart_depth.pop(ticker, None)
+    _cancel_top_of_book_subscription(ticker)
     _depth_cache.pop(ticker, None)
     _depth_last_update.pop(ticker, None)
+    _last_error_by_ticker.pop(ticker, None)
     if sub is not None and ib is not None:
         try:
-            ib.cancelMktDepth(sub.contract, isSmartDepth=True)
+            ib.cancelMktDepth(sub.contract, isSmartDepth=bool(smart_depth))
         except Exception:
             pass
 
@@ -148,6 +415,8 @@ async def resubscribe_all(force: bool = True):
     tickers = list(_subscriptions.keys())
     for ticker in tickers:
         try:
-            await subscribe_depth(ticker, force=force)
+            exchange = _subscription_exchange.get(ticker, "SMART")
+            smart_depth = _subscription_smart_depth.get(ticker, True)
+            await subscribe_depth(ticker, exchange=exchange, force=force, is_smart_depth=smart_depth)
         except Exception as e:
             logger.warning(f"[IBKR OrderBook] resubscribe_all failed for {ticker}: {e}")

@@ -186,8 +186,23 @@ def ibkr_order_book(ticker: str, _auth=Depends(require_api_key)):
     return {"ticker": ticker.upper(), "depth": get_snapshot(ticker.upper())}
 
 
+@router.get("/order_book/{ticker}/diagnostics")
+def ibkr_order_book_diagnostics(ticker: str, _auth=Depends(require_api_key)):
+    """Return depth subscription health and latest IB error context for ticker."""
+    from ibkr.order_book import get_depth_diagnostics
+
+    return get_depth_diagnostics(ticker.upper())
+
+
 @router.post("/order_book/{ticker}/subscribe")
-async def ibkr_subscribe_depth(ticker: str, force: bool = False, _auth=Depends(require_api_key)):
+async def ibkr_subscribe_depth(
+    ticker: str,
+    force: bool = False,
+    exchange: str = "SMART",
+    smart_depth: Optional[bool] = None,
+    rows: int = 5,
+    _auth=Depends(require_api_key),
+):
     """Subscribe to live Level 2 market depth for a ticker."""
     from ibkr.client import is_connected
     from ibkr.order_book import subscribe_depth
@@ -195,11 +210,30 @@ async def ibkr_subscribe_depth(ticker: str, force: bool = False, _auth=Depends(r
     if not is_connected():
         raise HTTPException(status_code=503, detail="Not connected to IB Gateway")
 
-    ok = await subscribe_depth(ticker.upper(), force=force)
-    if not ok:
-        raise HTTPException(status_code=502, detail=f"Failed to subscribe depth for {ticker.upper()}")
+    ticker_u = ticker.upper()
+    exchange_u = str(exchange or "SMART").strip().upper()
+    rows = max(1, min(20, int(rows or 5)))
+    if smart_depth is None:
+        smart_depth = exchange_u == "SMART"
 
-    return {"ok": True, "ticker": ticker.upper(), "force": force}
+    ok = await subscribe_depth(
+        ticker_u,
+        exchange=exchange_u,
+        num_rows=rows,
+        force=force,
+        is_smart_depth=bool(smart_depth),
+    )
+    if not ok:
+        raise HTTPException(status_code=502, detail=f"Failed to subscribe depth for {ticker_u}")
+
+    return {
+        "ok": True,
+        "ticker": ticker_u,
+        "force": force,
+        "exchange": exchange_u,
+        "smart_depth": bool(smart_depth),
+        "rows": rows,
+    }
 
 
 @router.get("/order_book/exchanges")

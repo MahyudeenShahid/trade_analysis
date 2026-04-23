@@ -52,36 +52,69 @@ def _attach_error_handler_once():
         except Exception:
             code_int = None
 
+        ticker = None
+        try:
+            from .order_book import record_ib_error
+            ticker = record_ib_error(req_id, code_int if code_int is not None else code, msg)
+        except Exception:
+            ticker = None
+
         if code_int in (1101, 316):
-            logger.warning(
-                "[IBKR] Error %s (reqId=%s): %s. Re-subscribing all depth feeds.",
-                code_int,
-                req_id,
-                msg,
-            )
+            if ticker:
+                logger.warning(
+                    "[IBKR] Error %s (reqId=%s ticker=%s): %s. Re-subscribing all depth feeds.",
+                    code_int,
+                    req_id,
+                    ticker,
+                    msg,
+                )
+            else:
+                logger.warning(
+                    "[IBKR] Error %s (reqId=%s): %s. Re-subscribing all depth feeds.",
+                    code_int,
+                    req_id,
+                    msg,
+                )
             try:
                 from .order_book import resubscribe_all
                 asyncio.create_task(resubscribe_all(force=True))
             except Exception as e:
                 logger.warning(f"[IBKR] Could not trigger depth resubscribe: {e}")
         elif code_int == 317:
-            logger.warning(
-                "[IBKR] Error 317 (reqId=%s): %s. Clearing cached depth books.",
-                req_id,
-                msg,
-            )
+            if ticker:
+                logger.warning(
+                    "[IBKR] Error 317 (reqId=%s ticker=%s): %s. Clearing cached depth books.",
+                    req_id,
+                    ticker,
+                    msg,
+                )
+            else:
+                logger.warning(
+                    "[IBKR] Error 317 (reqId=%s): %s. Clearing cached depth books.",
+                    req_id,
+                    msg,
+                )
             try:
                 from .order_book import clear_all_depth_cache
                 clear_all_depth_cache()
             except Exception as e:
                 logger.warning(f"[IBKR] Could not clear depth cache after 317: {e}")
         elif code_int in (309, 354, 10090, 10186, 10197):
-            logger.warning(
-                "[IBKR] Market-data warning/error %s (reqId=%s): %s",
-                code_int,
-                req_id,
-                msg,
-            )
+            if ticker:
+                logger.warning(
+                    "[IBKR] Market-data warning/error %s (reqId=%s ticker=%s): %s",
+                    code_int,
+                    req_id,
+                    ticker,
+                    msg,
+                )
+            else:
+                logger.warning(
+                    "[IBKR] Market-data warning/error %s (reqId=%s): %s",
+                    code_int,
+                    req_id,
+                    msg,
+                )
 
     try:
         ib.errorEvent += _on_ib_error
