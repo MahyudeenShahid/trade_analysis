@@ -17,9 +17,10 @@ pip install -r requirements.txt
 
 $env:DEV_ALLOW_ORIGINS = "https://marketview1.netlify.app"
 # Preferred (refactored entrypoint)
-python -m uvicorn main:app --host 0.0.0.0 --port 8000 --reload
+python -m uvicorn main:app --host 0.0.0.0 --port 8000
 # Compatibility (kept working)
-# python -m uvicorn backend_server:app --host 0.0.0.0 --port 8000 --reload
+# python -m uvicorn backend_server:app --host 0.0.0.0 --port 8000
+# Dev-only auto reload (can cause IBKR API reconnect churn): add --reload explicitly
 
 ```
 

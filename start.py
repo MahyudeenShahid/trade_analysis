@@ -6,7 +6,8 @@ Usage:
     python start.py
 
 Or with custom settings:
-    python start.py --host 0.0.0.0 --port 8000 --reload
+    python start.py --host 0.0.0.0 --port 8000
+    python start.py --reload
 """
 
 import subprocess
@@ -19,7 +20,6 @@ def main():
         "main:app",
         "--host", "0.0.0.0",
         "--port", "8000",
-        "--reload"
     ]
 
     # Add any additional arguments passed by user
