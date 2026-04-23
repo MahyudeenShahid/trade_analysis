@@ -2,6 +2,7 @@
 
 import asyncio
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
+from api.dependencies import require_ws_auth
 from ws.manager import manager
 
 router = APIRouter(tags=["websocket"])
@@ -15,6 +16,10 @@ async def websocket_root(websocket: WebSocket):
     Accept connections made to the root path (some clients/tunnels connect here).
     Maintains connection for real-time updates from broadcaster.
     """
+    if not require_ws_auth(websocket):
+        await websocket.close(code=1008)
+        return
+
     try:
         print(f"[WS] incoming connection at / from {websocket.client}")
     except Exception:
@@ -35,6 +40,10 @@ async def websocket_endpoint(websocket: WebSocket):
     Primary WebSocket endpoint for real-time status updates.
     Broadcaster sends updates to all connected clients.
     """
+    if not require_ws_auth(websocket):
+        await websocket.close(code=1008)
+        return
+
     try:
         print(f"[WS] incoming connection at /ws from {websocket.client}")
     except Exception:

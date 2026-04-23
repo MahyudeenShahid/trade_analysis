@@ -29,7 +29,7 @@ from config.settings import (
 )
 from db.migrations import init_db
 from ws.broadcaster import broadcaster_loop
-from api.routes import windows, capture, history, trades, bots, websocket, chart, settings
+from api.routes import windows, capture, history, trades, bots, websocket, chart, settings, auth
 from api.routes import ibkr as ibkr_routes
 
 
@@ -141,6 +141,14 @@ async def startup_event():
     except Exception as e:
         print(f"[Startup] Warning: Could not auto-enable IBKR: {e}")
 
+    # Step 2b: Ensure a default auth user exists
+    try:
+        from api.routes.auth import bootstrap_default_auth_user
+        bootstrap_default_auth_user()
+        print("[Startup] Authentication user bootstrap complete ✓")
+    except Exception as e:
+        print(f"[Startup] Warning: Could not bootstrap auth user: {e}")
+
     # Step 3: Start background tasks
     print("[Startup] Starting background tasks...")
     asyncio.create_task(broadcaster_loop())
@@ -162,6 +170,7 @@ app.include_router(bots.router)
 app.include_router(websocket.router)
 app.include_router(chart.router)
 app.include_router(settings.router)
+app.include_router(auth.router)
 app.include_router(ibkr_routes.router)
 
 

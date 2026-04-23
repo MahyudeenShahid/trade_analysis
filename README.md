@@ -15,7 +15,13 @@ python -m venv .venv
 python -m pip install --upgrade pip
 pip install -r requirements.txt
 
-$env:DEV_ALLOW_ORIGINS = "https://marketview1.netlify.app"
+# Create local secrets file from template (recommended)
+Copy-Item .env.example .env
+# Edit .env and set secure values for BACKEND_AUTH_SECRET and BACKEND_ADMIN_PASSWORD
+
+# Optional: process-level overrides (take precedence over .env)
+# $env:BACKEND_ADMIN_PASSWORD = "change-this-password"
+# $env:BACKEND_AUTH_SECRET = "replace-with-a-long-random-secret"
 # Preferred (refactored entrypoint)
 python -m uvicorn main:app --host 0.0.0.0 --port 8000
 # Compatibility (kept working)
@@ -47,6 +53,47 @@ VITE_API_KEY=devkey
 ```
 
 Restart the frontend after changing env values.
+
+## Login and Security
+
+This backend now supports username/password login with JWT bearer tokens.
+
+Config is loaded from `trade_analysis/.env` automatically (without exporting every variable in PowerShell).
+
+- Template: `trade_analysis/.env.example`
+- Local secrets file: `trade_analysis/.env` (gitignored)
+
+- Login endpoint: `POST /auth/login`
+- Session check endpoint: `GET /auth/me`
+- Protected WebSocket: `/ws?token=<ACCESS_TOKEN>` (or `/` with token)
+
+### Default bootstrap user
+
+At startup, if the `users` table is empty, the server creates one admin user from:
+
+- `BACKEND_ADMIN_USERNAME` (default: `admin`)
+- `BACKEND_ADMIN_PASSWORD` (default: `BACKEND_API_KEY`)
+
+Change these values in production.
+
+### Token settings
+
+- `BACKEND_AUTH_SECRET`: JWT signing secret (must be long/random in production)
+- `BACKEND_AUTH_TOKEN_EXPIRE_MINUTES`: token lifetime (default: `480`)
+- `BACKEND_AUTH_ALLOW_LEGACY_API_KEY`: allow old API-key auth fallback (`1`/`0`)
+
+### Example login request
+
+```powershell
+curl -X POST http://localhost:8000/auth/login \
+	-H "Content-Type: application/json" \
+	-d '{"username":"admin","password":"change-this-password"}'
+```
+
+Use returned `access_token` as:
+
+- HTTP: `Authorization: Bearer <token>`
+- WS: `ws://localhost:8000/ws?token=<token>`
 
 ---
 

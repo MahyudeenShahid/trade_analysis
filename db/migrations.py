@@ -132,6 +132,21 @@ def init_db():
         )
         """
     )
+
+    # Users table for authentication
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS users (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            username TEXT NOT NULL UNIQUE,
+            password_hash TEXT NOT NULL,
+            role TEXT NOT NULL DEFAULT 'admin',
+            is_active INTEGER NOT NULL DEFAULT 1,
+            created_at TEXT,
+            updated_at TEXT
+        )
+        """
+    )
     cur.execute(
         "INSERT OR IGNORE INTO app_settings (key, value) VALUES (?, ?)",
         ("time_mode", "local"),
@@ -274,6 +289,7 @@ def init_db():
     conn2.execute("CREATE INDEX IF NOT EXISTS idx_records_ticker ON records(ticker)")
     conn2.execute("CREATE INDEX IF NOT EXISTS idx_live_orders_ts ON live_orders(ts DESC)")
     conn2.execute("CREATE INDEX IF NOT EXISTS idx_live_orders_hwnd ON live_orders(hwnd, ts DESC)")
+    conn2.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_users_username ON users(username)")
     conn2.commit()
     conn2.close()
 

@@ -8,6 +8,7 @@ from . import bots
 from . import websocket
 from . import chart
 from . import settings
+from . import auth
 
 __all__ = [
     "windows",
@@ -18,4 +19,5 @@ __all__ = [
     "websocket",
     "chart",
     "settings",
+    "auth",
 ]
