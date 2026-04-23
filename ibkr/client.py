@@ -145,6 +145,15 @@ async def connect(host: str = "127.0.0.1", port: int = 4002, client_id: int = 1)
         await ib.connectAsync(host, port, clientId=client_id, timeout=15)
         _connected = True
         _attach_error_handler_once()
+
+        # After any reconnect, previously tracked depth subscriptions may be stale
+        # even if IB reports connected. Force a clean re-subscribe for all symbols.
+        try:
+            from .order_book import resubscribe_all
+            await resubscribe_all(force=True)
+        except Exception as e:
+            logger.warning(f"[IBKR] Post-connect depth resubscribe failed: {e}")
+
         logger.info(f"[IBKR] Connected to {host}:{port} clientId={client_id}")
         return True
     except Exception as e:

@@ -272,7 +272,7 @@ async def subscribe_depth(
         has_depth = bool((snap.get("bids") or []) or (snap.get("asks") or []))
         last_update = _depth_last_update.get(ticker, 0.0)
         age = (now - last_update) if last_update else None
-        stale = (not has_depth) and (age is None or age > _STALE_SUB_SECONDS)
+        stale = ((age is None) and (not has_depth)) or ((age is not None) and (age > _STALE_SUB_SECONDS))
         if not stale:
             return True
         logger.warning(
