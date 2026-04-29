@@ -374,9 +374,14 @@ async def handle_trade_event(trade_dict: dict, bot_row: dict, hwnd: int, get_cur
                 if last_buy and last_buy.get("fill_price"):
                     buy_price = float(last_buy["fill_price"])
                     sell_price = float(result.fill_price)
-                    profit = (sell_price - buy_price) * qty
+                    buy_qty = float(last_buy.get("qty") or qty)
+                    matched_qty = max(0.0, min(float(qty), buy_qty))
+                    profit = (sell_price - buy_price) * matched_qty
                     buy_order_id = last_buy.get("id")
-                    logger.info(f"[IBKR] P&L calculated: ${profit:.2f} (buy @ {buy_price:.2f}, sell @ {sell_price:.2f})")
+                    logger.info(
+                        f"[IBKR] P&L calculated: ${profit:.2f} "
+                        f"(qty={matched_qty:.4f}, buy @ {buy_price:.2f}, sell @ {sell_price:.2f})"
+                    )
             except Exception as pnl_err:
                 logger.warning(f"[IBKR] P&L calculation failed (non-fatal): {pnl_err}")
 
