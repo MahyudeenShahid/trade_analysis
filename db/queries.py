@@ -163,7 +163,7 @@ def upsert_bot_from_last_result(hwnd: int, last: dict):
                 )
             else:
                 cur.execute(
-                    "INSERT INTO bots (hwnd, name, ticker, total_pnl, open_direction, open_price, open_time, rule_1_enabled, rule_2_enabled, rule_3_enabled, rule_4_enabled, rule_5_enabled, rule_6_enabled, rule_7_enabled, rule_8_enabled, rule_9_enabled, take_profit_amount, stop_loss_amount, rule_3_drop_count, rule_5_down_minutes, rule_5_reversal_amount, rule_5_scalp_amount, rule_6_down_minutes, rule_6_profit_amount, rule_7_up_minutes, rule_8_buy_offset, rule_8_sell_offset, rule_9_amount, rule_9_flips, rule_9_window_minutes, meta) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    "INSERT INTO bots (hwnd, name, ticker, total_pnl, open_direction, open_price, open_time, rule_1_enabled, rule_2_enabled, rule_3_enabled, rule_4_enabled, rule_5_enabled, rule_6_enabled, rule_7_enabled, rule_8_enabled, rule_9_enabled, take_profit_amount, stop_loss_amount, rule_3_drop_count, rule_5_down_minutes, rule_5_reversal_amount, rule_5_scalp_amount, rule_6_down_minutes, rule_6_profit_amount, rule_7_up_minutes, rule_8_buy_offset, rule_8_sell_offset, rule_9_amount, rule_9_flips, rule_9_window_minutes, rsi_bollinger_enabled, rsi_bollinger_rsi_length, rsi_bollinger_rsi_threshold, rsi_bollinger_bb_length, rsi_bollinger_bb_stdev, rsi_bollinger_profit_pct, rsi_bollinger_stop_pct, meta) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     (
                         hwnd,
                         name,
@@ -195,6 +195,13 @@ def upsert_bot_from_last_result(hwnd: int, last: dict):
                         0.25,
                         3,
                         3,
+                        0,
+                        14,
+                        30.0,
+                        20,
+                        2.0,
+                        0.2,
+                        0.4,
                         json.dumps(meta) if isinstance(meta, dict) else json.dumps({}),
                     ),
                 )
@@ -240,6 +247,13 @@ def upsert_bot_settings(hwnd: int, settings: dict):
     rule_9_amount = settings.get('rule_9_amount')
     rule_9_flips = settings.get('rule_9_flips')
     rule_9_window_minutes = settings.get('rule_9_window_minutes')
+    rsi_bollinger_enabled = settings.get('rsi_bollinger_enabled')
+    rsi_bollinger_rsi_length = settings.get('rsi_bollinger_rsi_length')
+    rsi_bollinger_rsi_threshold = settings.get('rsi_bollinger_rsi_threshold')
+    rsi_bollinger_bb_length = settings.get('rsi_bollinger_bb_length')
+    rsi_bollinger_bb_stdev = settings.get('rsi_bollinger_bb_stdev')
+    rsi_bollinger_profit_pct = settings.get('rsi_bollinger_profit_pct')
+    rsi_bollinger_stop_pct = settings.get('rsi_bollinger_stop_pct')
 
     # IBKR order settings
     live_trading_enabled = settings.get('live_trading_enabled')
@@ -342,6 +356,38 @@ def upsert_bot_settings(hwnd: int, settings: dict):
             rule_9_window_minutes = int(rule_9_window_minutes)
         except Exception:
             rule_9_window_minutes = None
+    if rsi_bollinger_enabled is not None:
+        rsi_bollinger_enabled = 1 if bool(rsi_bollinger_enabled) else 0
+    if rsi_bollinger_rsi_length is not None:
+        try:
+            rsi_bollinger_rsi_length = int(rsi_bollinger_rsi_length)
+        except Exception:
+            rsi_bollinger_rsi_length = None
+    if rsi_bollinger_rsi_threshold is not None:
+        try:
+            rsi_bollinger_rsi_threshold = float(rsi_bollinger_rsi_threshold)
+        except Exception:
+            rsi_bollinger_rsi_threshold = None
+    if rsi_bollinger_bb_length is not None:
+        try:
+            rsi_bollinger_bb_length = int(rsi_bollinger_bb_length)
+        except Exception:
+            rsi_bollinger_bb_length = None
+    if rsi_bollinger_bb_stdev is not None:
+        try:
+            rsi_bollinger_bb_stdev = float(rsi_bollinger_bb_stdev)
+        except Exception:
+            rsi_bollinger_bb_stdev = None
+    if rsi_bollinger_profit_pct is not None:
+        try:
+            rsi_bollinger_profit_pct = float(rsi_bollinger_profit_pct)
+        except Exception:
+            rsi_bollinger_profit_pct = None
+    if rsi_bollinger_stop_pct is not None:
+        try:
+            rsi_bollinger_stop_pct = float(rsi_bollinger_stop_pct)
+        except Exception:
+            rsi_bollinger_stop_pct = None
 
     # Normalize IBKR order settings
     if live_trading_enabled is not None:
@@ -444,6 +490,13 @@ def upsert_bot_settings(hwnd: int, settings: dict):
                     rule_9_amount = COALESCE(?, rule_9_amount),
                     rule_9_flips = COALESCE(?, rule_9_flips),
                     rule_9_window_minutes = COALESCE(?, rule_9_window_minutes),
+                    rsi_bollinger_enabled = COALESCE(?, rsi_bollinger_enabled),
+                    rsi_bollinger_rsi_length = COALESCE(?, rsi_bollinger_rsi_length),
+                    rsi_bollinger_rsi_threshold = COALESCE(?, rsi_bollinger_rsi_threshold),
+                    rsi_bollinger_bb_length = COALESCE(?, rsi_bollinger_bb_length),
+                    rsi_bollinger_bb_stdev = COALESCE(?, rsi_bollinger_bb_stdev),
+                    rsi_bollinger_profit_pct = COALESCE(?, rsi_bollinger_profit_pct),
+                    rsi_bollinger_stop_pct = COALESCE(?, rsi_bollinger_stop_pct),
                     live_trading_enabled = COALESCE(?, live_trading_enabled),
                     order_size_type = COALESCE(?, order_size_type),
                     order_size_value = COALESCE(?, order_size_value),
@@ -483,6 +536,13 @@ def upsert_bot_settings(hwnd: int, settings: dict):
                     rule_9_amount,
                     rule_9_flips,
                     rule_9_window_minutes,
+                    rsi_bollinger_enabled,
+                    rsi_bollinger_rsi_length,
+                    rsi_bollinger_rsi_threshold,
+                    rsi_bollinger_bb_length,
+                    rsi_bollinger_bb_stdev,
+                    rsi_bollinger_profit_pct,
+                    rsi_bollinger_stop_pct,
                     live_trading_enabled,
                     order_size_type,
                     order_size_value,
@@ -500,8 +560,8 @@ def upsert_bot_settings(hwnd: int, settings: dict):
         else:
             cur.execute(
                 """
-                INSERT INTO bots (hwnd, name, ticker, total_pnl, open_direction, open_price, open_time, rule_1_enabled, rule_2_enabled, rule_3_enabled, rule_4_enabled, rule_5_enabled, rule_6_enabled, rule_7_enabled, rule_8_enabled, rule_9_enabled, take_profit_amount, stop_loss_amount, rule_3_drop_count, rule_5_down_minutes, rule_5_reversal_amount, rule_5_scalp_amount, rule_6_down_minutes, rule_6_profit_amount, rule_7_up_minutes, rule_8_buy_offset, rule_8_sell_offset, rule_9_amount, rule_9_flips, rule_9_window_minutes, live_trading_enabled, order_size_type, order_size_value, buy_order_type, sell_order_type, retry_delay_secs, max_retries, min_trade_dollars, validate_conditions_on_retry, default_trade_enabled, meta)
-                VALUES (?, ?, ?, NULL, NULL, NULL, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO bots (hwnd, name, ticker, total_pnl, open_direction, open_price, open_time, rule_1_enabled, rule_2_enabled, rule_3_enabled, rule_4_enabled, rule_5_enabled, rule_6_enabled, rule_7_enabled, rule_8_enabled, rule_9_enabled, take_profit_amount, stop_loss_amount, rule_3_drop_count, rule_5_down_minutes, rule_5_reversal_amount, rule_5_scalp_amount, rule_6_down_minutes, rule_6_profit_amount, rule_7_up_minutes, rule_8_buy_offset, rule_8_sell_offset, rule_9_amount, rule_9_flips, rule_9_window_minutes, rsi_bollinger_enabled, rsi_bollinger_rsi_length, rsi_bollinger_rsi_threshold, rsi_bollinger_bb_length, rsi_bollinger_bb_stdev, rsi_bollinger_profit_pct, rsi_bollinger_stop_pct, live_trading_enabled, order_size_type, order_size_value, buy_order_type, sell_order_type, retry_delay_secs, max_retries, min_trade_dollars, validate_conditions_on_retry, default_trade_enabled, meta)
+                VALUES (?, ?, ?, NULL, NULL, NULL, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     hwnd,
@@ -530,6 +590,13 @@ def upsert_bot_settings(hwnd: int, settings: dict):
                     rule_9_amount if rule_9_amount is not None else 0.25,
                     rule_9_flips if rule_9_flips is not None else 3,
                     rule_9_window_minutes if rule_9_window_minutes is not None else 3,
+                    rsi_bollinger_enabled if rsi_bollinger_enabled is not None else 0,
+                    rsi_bollinger_rsi_length if rsi_bollinger_rsi_length is not None else 14,
+                    rsi_bollinger_rsi_threshold if rsi_bollinger_rsi_threshold is not None else 30.0,
+                    rsi_bollinger_bb_length if rsi_bollinger_bb_length is not None else 20,
+                    rsi_bollinger_bb_stdev if rsi_bollinger_bb_stdev is not None else 2.0,
+                    rsi_bollinger_profit_pct if rsi_bollinger_profit_pct is not None else 0.2,
+                    rsi_bollinger_stop_pct if rsi_bollinger_stop_pct is not None else 0.4,
                     live_trading_enabled if live_trading_enabled is not None else 0,
                     order_size_type if order_size_type is not None else 'fixed',
                     order_size_value if order_size_value is not None else 1.0,

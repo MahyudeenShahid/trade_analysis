@@ -119,6 +119,13 @@ def init_db():
             rule_9_amount REAL,
             rule_9_flips INTEGER,
             rule_9_window_minutes INTEGER,
+            rsi_bollinger_enabled INTEGER,
+            rsi_bollinger_rsi_length INTEGER,
+            rsi_bollinger_rsi_threshold REAL,
+            rsi_bollinger_bb_length INTEGER,
+            rsi_bollinger_bb_stdev REAL,
+            rsi_bollinger_profit_pct REAL,
+            rsi_bollinger_stop_pct REAL,
             meta TEXT
         )
         """
@@ -215,6 +222,13 @@ def init_db():
             ("rule_9_amount", "REAL"),
             ("rule_9_flips", "INTEGER"),
             ("rule_9_window_minutes", "INTEGER"),
+            ("rsi_bollinger_enabled", "INTEGER DEFAULT 0"),
+            ("rsi_bollinger_rsi_length", "INTEGER DEFAULT 14"),
+            ("rsi_bollinger_rsi_threshold", "REAL DEFAULT 30"),
+            ("rsi_bollinger_bb_length", "INTEGER DEFAULT 20"),
+            ("rsi_bollinger_bb_stdev", "REAL DEFAULT 2.0"),
+            ("rsi_bollinger_profit_pct", "REAL DEFAULT 0.2"),
+            ("rsi_bollinger_stop_pct", "REAL DEFAULT 0.4"),
             # IBKR live trading settings
             ("live_trading_enabled", "INTEGER DEFAULT 0"),
             ("order_size_type", "TEXT DEFAULT 'fixed'"),

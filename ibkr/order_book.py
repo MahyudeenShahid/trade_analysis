@@ -41,6 +41,13 @@ _last_error_by_ticker: Dict[str, dict] = {}
 _last_error_global: dict = {}
 
 _STALE_SUB_SECONDS = 20.0
+_PRICE_HISTORY_WINDOW_SECONDS = 20 * 60
+_PRICE_SAMPLE_INTERVAL_SECONDS = 60
+
+# ticker -> list of {ts, price} samples (rolling window)
+_price_history: Dict[str, list] = {}
+# ticker -> last sample timestamp (to control sampling cadence)
+_last_price_sample_ts: Dict[str, float] = {}
 
 
 def get_snapshot(ticker: str) -> dict:
@@ -84,6 +91,35 @@ def _build_bbo_rows(top_book: Optional[dict]):
     bids = [{"price": bid, "size": bid_size, "mm": "BBO"}] if bid is not None else []
     asks = [{"price": ask, "size": ask_size, "mm": "BBO"}] if ask is not None else []
     return bids, asks
+
+
+def _record_price_sample(ticker: str, price: Optional[float], ts: Optional[float] = None):
+    if price is None:
+        return
+
+    ts = float(ts if ts is not None else time.time())
+    last_ts = _last_price_sample_ts.get(ticker)
+    if last_ts is not None and (ts - last_ts) < _PRICE_SAMPLE_INTERVAL_SECONDS:
+        return
+
+    _last_price_sample_ts[ticker] = ts
+    history = _price_history.setdefault(ticker, [])
+    history.append({"ts": ts, "price": float(price)})
+
+    cutoff = ts - _PRICE_HISTORY_WINDOW_SECONDS
+    while history and history[0].get("ts", 0) < cutoff:
+        history.pop(0)
+
+
+def get_price_history(ticker: str, lookback_seconds: int = _PRICE_HISTORY_WINDOW_SECONDS) -> list:
+    """Return recent price samples for RSI/Bollinger calculations."""
+    ticker = str(ticker or "").strip().upper()
+    history = _price_history.get(ticker) or []
+    if not history:
+        return []
+
+    cutoff = time.time() - float(lookback_seconds or _PRICE_HISTORY_WINDOW_SECONDS)
+    return [row.get("price") for row in history if row.get("ts", 0) >= cutoff]
 
 
 def _cancel_top_of_book_subscription(ticker: str):
@@ -151,6 +187,15 @@ def _ensure_top_of_book_subscription(ticker: str, contract):
             "ts": ts,
         }
         _top_book_cache[ticker] = top_book
+
+        mid_price = None
+        if bid is not None and ask is not None:
+            mid_price = (bid + ask) / 2.0
+        elif bid is not None:
+            mid_price = bid
+        elif ask is not None:
+            mid_price = ask
+        _record_price_sample(ticker, mid_price, ts)
 
         # Only overwrite cached rows while L2 is absent; once true DOM appears,
         # keep L2 as authoritative.
@@ -354,6 +399,17 @@ async def subscribe_depth(
             if bids or asks:
                 _last_error_by_ticker.pop(ticker, None)
 
+            best_bid = bids[0].get("price") if bids else None
+            best_ask = asks[0].get("price") if asks else None
+            mid_price = None
+            if best_bid is not None and best_ask is not None:
+                mid_price = (float(best_bid) + float(best_ask)) / 2.0
+            elif best_bid is not None:
+                mid_price = float(best_bid)
+            elif best_ask is not None:
+                mid_price = float(best_ask)
+            _record_price_sample(ticker, mid_price)
+
         depth_ticker.updateEvent += on_depth_update
         logger.info(
             "[IBKR OrderBook] Subscribed to depth for %s (exchange=%s isSmartDepth=%s rows=%s)",
@@ -384,6 +440,8 @@ async def unsubscribe_depth(ticker: str):
     _depth_cache.pop(ticker, None)
     _depth_last_update.pop(ticker, None)
     _last_error_by_ticker.pop(ticker, None)
+    _price_history.pop(ticker, None)
+    _last_price_sample_ts.pop(ticker, None)
     if sub is not None and ib is not None:
         try:
             ib.cancelMktDepth(sub.contract, isSmartDepth=bool(smart_depth))
