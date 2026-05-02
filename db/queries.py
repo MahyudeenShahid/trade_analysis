@@ -683,26 +683,26 @@ def count_live_orders(hwnd: int = None, bot_id: str = None) -> int:
 
 
 def get_last_buy_order(hwnd: int, ticker: str) -> dict:
-        """Get the most recent unmatched filled BUY order for a ticker/hwnd.
+    """Get the most recent unmatched filled BUY order for a ticker/hwnd.
 
-        A BUY is considered matched if any filled SELL already references it via buy_order_id.
-        """
+    A BUY is considered matched if any filled SELL already references it via buy_order_id.
+    """
     rows = query_records(
-                """SELECT b.*
-                     FROM live_orders b
-                     WHERE b.hwnd = ?
-                         AND b.ticker = ?
-                         AND b.direction = 'buy'
-                         AND b.status = 'filled'
-                         AND NOT EXISTS (
-                             SELECT 1
-                             FROM live_orders s
-                             WHERE s.direction = 'sell'
-                                 AND s.status = 'filled'
-                                 AND s.buy_order_id = b.id
-                         )
-                     ORDER BY b.ts DESC
-                     LIMIT 1""",
+        """SELECT b.*
+             FROM live_orders b
+             WHERE b.hwnd = ?
+                 AND b.ticker = ?
+                 AND b.direction = 'buy'
+                 AND b.status = 'filled'
+                 AND NOT EXISTS (
+                     SELECT 1
+                     FROM live_orders s
+                     WHERE s.direction = 'sell'
+                         AND s.status = 'filled'
+                         AND s.buy_order_id = b.id
+                 )
+             ORDER BY b.ts DESC
+             LIMIT 1""",
         (int(hwnd), ticker),
     )
     return rows[0] if rows else None
