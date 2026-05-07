@@ -90,6 +90,14 @@ class TradeSimulator:
                   rule_9_enabled: bool = False, rule_9_amount: Optional[float] = None, 
                   rule_9_flips: Optional[int] = None, 
                   rule_9_window_minutes: Optional[int] = None,
+                  rsi_bollinger_enabled: bool = False,
+                  rsi_bollinger_rsi_length: Optional[int] = None,
+                  rsi_bollinger_rsi_threshold: Optional[float] = None,
+                  rsi_bollinger_bb_length: Optional[int] = None,
+                  rsi_bollinger_bb_stdev: Optional[float] = None,
+                  rsi_bollinger_profit_pct: Optional[float] = None,
+                  rsi_bollinger_stop_pct: Optional[float] = None,
+                  rsi_bollinger_price_history: Optional[list] = None,
                   rule_4_start_time: Optional[str] = None,
                   rule_4_end_time: Optional[str] = None,
                   rule_4_days=None,
@@ -106,6 +114,15 @@ class TradeSimulator:
         trend = trend.lower()
         self._ensure_ticker(state_key, ticker=ticker, bot_id=bot_id, bot_name=bot_name)
         state = self.state_manager.get(state_key)
+
+        if state is not None:
+            try:
+                price_value = float(price)
+                state.price_history.append(price_value)
+                if len(state.price_history) > 500:
+                    state.price_history = state.price_history[-500:]
+            except Exception:
+                pass
 
         # RULE #4 must gate ALL auto-trading logic (including Rules 1-3).
         # If outside allowed schedule, return early with no auto action.
@@ -141,6 +158,27 @@ class TradeSimulator:
                 pass
         
         if auto:
+            # RSI + Bollinger Reversal rule (blocks default logic while enabled)
+            if rsi_bollinger_enabled:
+                try:
+                    history = rsi_bollinger_price_history if isinstance(rsi_bollinger_price_history, list) else state.price_history
+                    if rules.maybe_rsi_bollinger_trade(
+                        state,
+                        price,
+                        history,
+                        rsi_bollinger_rsi_length,
+                        rsi_bollinger_rsi_threshold,
+                        rsi_bollinger_bb_length,
+                        rsi_bollinger_bb_stdev,
+                        rsi_bollinger_profit_pct,
+                        rsi_bollinger_stop_pct,
+                        buy_cb,
+                        sell_cb,
+                    ):
+                        return self.summary()
+                except Exception:
+                    pass
+
             # RULE #5: 3-minute downtrend → reversal + scalp
             if rule_5_enabled:
                 try:
