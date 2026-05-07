@@ -97,6 +97,7 @@ class TradeSimulator:
                   rsi_bollinger_bb_stdev: Optional[float] = None,
                   rsi_bollinger_profit_pct: Optional[float] = None,
                   rsi_bollinger_stop_pct: Optional[float] = None,
+                  rsi_bollinger_price_history: Optional[list] = None,
                   rule_4_start_time: Optional[str] = None,
                   rule_4_end_time: Optional[str] = None,
                   rule_4_days=None,
@@ -160,10 +161,11 @@ class TradeSimulator:
             # RSI + Bollinger Reversal rule (blocks default logic while enabled)
             if rsi_bollinger_enabled:
                 try:
+                    history = rsi_bollinger_price_history if isinstance(rsi_bollinger_price_history, list) else state.price_history
                     if rules.maybe_rsi_bollinger_trade(
                         state,
                         price,
-                        state.price_history,
+                        history,
                         rsi_bollinger_rsi_length,
                         rsi_bollinger_rsi_threshold,
                         rsi_bollinger_bb_length,
