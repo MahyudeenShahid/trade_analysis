@@ -155,6 +155,12 @@ def init_db():
             (_k, _v),
         )
 
+    # Signal source for trading: screenshot or ibkr
+    cur.execute(
+        "INSERT OR IGNORE INTO app_settings (key, value) VALUES (?, ?)",
+        ("signal_source", "screenshot"),
+    )
+
     # Live orders table — one row per order placed via IBKR
     cur.execute(
         """

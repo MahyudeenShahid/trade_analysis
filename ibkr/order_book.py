@@ -60,6 +60,53 @@ def get_all_snapshots() -> dict:
     return dict(_depth_cache)
 
 
+def get_top_of_book(ticker: str) -> Optional[dict]:
+    """Return the latest top-of-book cache for ticker, or None."""
+    ticker = str(ticker or "").strip().upper()
+    if not ticker:
+        return None
+    return _top_book_cache.get(ticker)
+
+
+def get_mid_price(ticker: str) -> Optional[float]:
+    """Return mid price from top-of-book (bid/ask), or None when unavailable."""
+    top_book = get_top_of_book(ticker)
+    if not isinstance(top_book, dict):
+        return None
+    bid = _safe_positive_float(top_book.get("bid"))
+    ask = _safe_positive_float(top_book.get("ask"))
+    if bid is not None and ask is not None:
+        return round((bid + ask) / 2.0, 6)
+    return bid if bid is not None else ask
+
+
+async def ensure_top_of_book(ticker: str, exchange: str = "SMART") -> bool:
+    """Ensure top-of-book subscription is active for ticker.
+
+    This uses reqMktData (best bid/ask) without requiring Level 2 depth.
+    """
+    from .client import ib, is_connected
+
+    ticker = str(ticker or "").strip().upper()
+    if not ticker:
+        return False
+    if ticker in _top_subscriptions:
+        return True
+    if not is_connected() or ib is None:
+        return False
+
+    try:
+        from ib_async import Stock
+        exchange_u = str(exchange or "SMART").strip().upper()
+        contract = Stock(ticker, exchange_u, "USD")
+        await ib.qualifyContractsAsync(contract)
+        _ensure_top_of_book_subscription(ticker, contract)
+        return ticker in _top_subscriptions
+    except Exception as e:
+        logger.debug("[IBKR OrderBook] ensure_top_of_book(%s) failed: %s", ticker, e)
+        return False
+
+
 def _safe_positive_float(value):
     """Parse value into a positive float or None."""
     try:
