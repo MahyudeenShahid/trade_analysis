@@ -112,6 +112,13 @@ async def broadcaster_loop():
                         rule9_amount = None
                         rule9_flips = None
                         rule9_window = None
+                        rsi_bollinger_enabled = False
+                        rsi_bollinger_rsi_length = None
+                        rsi_bollinger_rsi_threshold = None
+                        rsi_bollinger_bb_length = None
+                        rsi_bollinger_bb_stdev = None
+                        rsi_bollinger_profit_pct = None
+                        rsi_bollinger_stop_pct = None
 
                         for bot in bot_list:
                             try:
@@ -145,6 +152,13 @@ async def broadcaster_loop():
                                 rule9_amount = bot.get('rule_9_amount')
                                 rule9_flips = bot.get('rule_9_flips')
                                 rule9_window = bot.get('rule_9_window_minutes')
+                                rsi_bollinger_enabled = bool(bot.get('rsi_bollinger_enabled'))
+                                rsi_bollinger_rsi_length = bot.get('rsi_bollinger_rsi_length')
+                                rsi_bollinger_rsi_threshold = bot.get('rsi_bollinger_rsi_threshold')
+                                rsi_bollinger_bb_length = bot.get('rsi_bollinger_bb_length')
+                                rsi_bollinger_bb_stdev = bot.get('rsi_bollinger_bb_stdev')
+                                rsi_bollinger_profit_pct = bot.get('rsi_bollinger_profit_pct')
+                                rsi_bollinger_stop_pct = bot.get('rsi_bollinger_stop_pct')
                                 default_trade = bot.get('default_trade_enabled', True)
                                 if default_trade is None:
                                     default_trade = True
@@ -195,7 +209,7 @@ async def broadcaster_loop():
                                 # the history list has just been compacted by the 1000-item
                                 # cap (after trimming before==after by length, breaking detection).
                                 before_total = trader.core._total_logged
-                                trader.on_signal(signal_trend, signal_price, bot_ticker, auto=True, rule_1_enabled=rule_enabled, take_profit_amount=tp_amount, rule_2_enabled=rule2_enabled, stop_loss_amount=sl_amount, rule_3_enabled=rule3_enabled, rule_3_drop_count=rule3_drop, rule_4_enabled=rule4_enabled, rule_4_start_time=rule4_start, rule_4_end_time=rule4_end, rule_4_days=rule4_days, rule_5_enabled=rule5_enabled, rule_5_down_minutes=rule5_down, rule_5_reversal_amount=rule5_reversal, rule_5_scalp_amount=rule5_scalp, rule_6_enabled=rule6_enabled, rule_6_down_minutes=rule6_down, rule_6_profit_amount=rule6_profit, rule_7_enabled=rule7_enabled, rule_7_up_minutes=rule7_up, rule_8_enabled=rule8_enabled, rule_8_buy_offset=rule8_buy, rule_8_sell_offset=rule8_sell, rule_9_enabled=rule9_enabled, rule_9_amount=rule9_amount, rule_9_flips=rule9_flips, rule_9_window_minutes=rule9_window, default_trade_enabled=default_trade, bot_id=bot_id, bot_name=bot_name)
+                                trader.on_signal(signal_trend, signal_price, bot_ticker, auto=True, rule_1_enabled=rule_enabled, take_profit_amount=tp_amount, rule_2_enabled=rule2_enabled, stop_loss_amount=sl_amount, rule_3_enabled=rule3_enabled, rule_3_drop_count=rule3_drop, rule_4_enabled=rule4_enabled, rule_4_start_time=rule4_start, rule_4_end_time=rule4_end, rule_4_days=rule4_days, rule_5_enabled=rule5_enabled, rule_5_down_minutes=rule5_down, rule_5_reversal_amount=rule5_reversal, rule_5_scalp_amount=rule5_scalp, rule_6_enabled=rule6_enabled, rule_6_down_minutes=rule6_down, rule_6_profit_amount=rule6_profit, rule_7_enabled=rule7_enabled, rule_7_up_minutes=rule7_up, rule_8_enabled=rule8_enabled, rule_8_buy_offset=rule8_buy, rule_8_sell_offset=rule8_sell, rule_9_enabled=rule9_enabled, rule_9_amount=rule9_amount, rule_9_flips=rule9_flips, rule_9_window_minutes=rule9_window, rsi_bollinger_enabled=rsi_bollinger_enabled, rsi_bollinger_rsi_length=rsi_bollinger_rsi_length, rsi_bollinger_rsi_threshold=rsi_bollinger_rsi_threshold, rsi_bollinger_bb_length=rsi_bollinger_bb_length, rsi_bollinger_bb_stdev=rsi_bollinger_bb_stdev, rsi_bollinger_profit_pct=rsi_bollinger_profit_pct, rsi_bollinger_stop_pct=rsi_bollinger_stop_pct, default_trade_enabled=default_trade, bot_id=bot_id, bot_name=bot_name)
                                 after_total = trader.core._total_logged
                                 new_trade_count = after_total - before_total
                                 if new_trade_count > 0:

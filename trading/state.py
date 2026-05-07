@@ -24,6 +24,9 @@ class TickerState:
         self.last_price: Optional[float] = None
         self.peak_price: Optional[float] = None
         self.drop_count = 0
+
+        # Price history for RSI/Bollinger calculations (rolling window)
+        self.price_history: List[float] = []
         
         # Rule 5 state
         self.rule5_down_start: Optional[datetime] = None

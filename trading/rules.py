@@ -4,6 +4,7 @@ Each rule modifies trading behavior based on specific conditions.
 """
 
 from typing import TYPE_CHECKING, Optional
+import math
 from datetime import datetime
 
 if TYPE_CHECKING:
@@ -312,3 +313,93 @@ def maybe_rule9_trade(state: 'TickerState', trend: str, current_price: float,
 
     # In position or cooldown expired — don't interfere, let normal logic run
     return False
+
+
+def _compute_rsi(prices: list, period: int) -> Optional[float]:
+    if period <= 0 or len(prices) < period + 1:
+        return None
+
+    gains = 0.0
+    losses = 0.0
+    start = len(prices) - period
+    for i in range(start, len(prices)):
+        delta = prices[i] - prices[i - 1]
+        if delta > 0:
+            gains += delta
+        elif delta < 0:
+            losses -= delta
+
+    if losses == 0:
+        return 100.0 if gains > 0 else 50.0
+
+    rs = gains / losses
+    return 100.0 - (100.0 / (1.0 + rs))
+
+
+def _compute_bollinger(prices: list, length: int, stdev_mult: float) -> Optional[tuple]:
+    if length <= 1 or len(prices) < length:
+        return None
+
+    window = prices[-length:]
+    mean = sum(window) / float(length)
+    variance = sum((p - mean) ** 2 for p in window) / float(length)
+    stdev = math.sqrt(variance)
+    upper = mean + stdev_mult * stdev
+    lower = mean - stdev_mult * stdev
+    return mean, upper, lower
+
+
+def maybe_rsi_bollinger_trade(state: 'TickerState', current_price: float,
+                              price_history: list,
+                              rsi_length: Optional[int], rsi_threshold: Optional[float],
+                              bb_length: Optional[int], bb_stdev: Optional[float],
+                              profit_pct: Optional[float], stop_pct: Optional[float],
+                              buy_callback, sell_callback) -> bool:
+    """
+    RSI + Bollinger Reversal:
+    - Buy when RSI <= threshold and price touches lower BB
+    - Sell at profit/stop percent from entry
+    Always returns True to block default logic while enabled.
+    """
+    rsi_len = max(int(rsi_length) if rsi_length else 14, 2)
+    rsi_th = float(rsi_threshold) if rsi_threshold is not None else 30.0
+    rsi_th = min(max(rsi_th, 1.0), 100.0)
+    bb_len = max(int(bb_length) if bb_length else 20, 2)
+    bb_sd = max(float(bb_stdev) if bb_stdev else 2.0, 0.1)
+    profit = float(profit_pct) if profit_pct is not None else 0.2
+    stop = float(stop_pct) if stop_pct is not None else 0.4
+    if profit < 0:
+        profit = 0.0
+    if stop < 0:
+        stop = 0.0
+
+    entry = state.position.get('entry') if state.position else None
+    if entry is not None:
+        if profit > 0:
+            target = float(entry) * (1.0 + (profit / 100.0))
+            if current_price >= target:
+                sell_callback(current_price, win_reason="RSI_BB_PROFIT")
+                return True
+
+        if stop > 0:
+            stop_price = float(entry) * (1.0 - (stop / 100.0))
+            if current_price <= stop_price:
+                sell_callback(current_price, win_reason="RSI_BB_STOP")
+                return True
+
+        return True
+
+    history = price_history if isinstance(price_history, list) else []
+    required = max(rsi_len + 1, bb_len)
+    if len(history) < required:
+        return True
+
+    rsi = _compute_rsi(history, rsi_len)
+    bands = _compute_bollinger(history, bb_len, bb_sd)
+    if rsi is None or bands is None:
+        return True
+
+    _, _upper, lower = bands
+    if rsi <= rsi_th and current_price <= lower:
+        buy_callback(current_price)
+    return True
