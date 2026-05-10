@@ -148,6 +148,18 @@ def init_db():
             (_k, _v),
         )
 
+    # Order book history defaults
+    for _k, _v in [
+        ("order_book_history_enabled", "1"),
+        ("order_book_history_interval_ms", "1000"),
+        ("order_book_history_levels", "5"),
+        ("order_book_history_retention_days", "30"),
+    ]:
+        cur.execute(
+            "INSERT OR IGNORE INTO app_settings (key, value) VALUES (?, ?)",
+            (_k, _v),
+        )
+
     # Live orders table — one row per order placed via IBKR
     cur.execute(
         """
@@ -186,6 +198,25 @@ def init_db():
         )
         """
     )
+
+    # Order book history — periodic L2 snapshots for replay
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS order_book_history (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            ts              TEXT NOT NULL,
+            ticker          TEXT,
+            source          TEXT,
+            levels          INTEGER,
+            bids            TEXT,
+            asks            TEXT
+        )
+        """
+    )
+    try:
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_order_book_history_ticker_ts ON order_book_history (ticker, ts)")
+    except Exception:
+        pass
 
     # Migration: ensure new columns exist in bots
     try:

@@ -186,6 +186,33 @@ def ibkr_order_book(ticker: str, _auth=Depends(require_api_key)):
     return {"ticker": ticker.upper(), "depth": get_snapshot(ticker.upper())}
 
 
+@router.get("/order_book/history/settings")
+def ibkr_order_book_history_settings(_auth=Depends(require_api_key)):
+    from ibkr.order_book_history import get_history_settings
+
+    return get_history_settings()
+
+
+@router.post("/order_book/history/settings")
+def ibkr_update_order_book_history_settings(payload: dict, _auth=Depends(require_api_key)):
+    from ibkr.order_book_history import update_history_settings
+
+    return update_history_settings(payload or {})
+
+
+@router.get("/order_book/{ticker}/history")
+def ibkr_order_book_history(
+    ticker: str,
+    start: Optional[str] = None,
+    end: Optional[str] = None,
+    max_points: int = 1000,
+    _auth=Depends(require_api_key),
+):
+    from ibkr.order_book_history import get_order_book_history
+
+    return get_order_book_history(ticker, start=start, end=end, max_points=max_points)
+
+
 @router.get("/order_book/{ticker}/diagnostics")
 def ibkr_order_book_diagnostics(ticker: str, _auth=Depends(require_api_key)):
     """Return depth subscription health and latest IB error context for ticker."""

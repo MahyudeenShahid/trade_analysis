@@ -146,6 +146,8 @@ async def startup_event():
     asyncio.create_task(broadcaster_loop())
     from ibkr.client import ibkr_keepalive_loop
     asyncio.create_task(ibkr_keepalive_loop())
+    from ibkr.order_book_history import order_book_history_loop
+    asyncio.create_task(order_book_history_loop())
     print("[Startup] All systems ready ✓")
 
 
