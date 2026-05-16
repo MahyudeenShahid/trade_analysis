@@ -247,6 +247,12 @@ def upsert_bot_settings(hwnd: int, settings: dict):
     rule_9_amount = settings.get('rule_9_amount')
     rule_9_flips = settings.get('rule_9_flips')
     rule_9_window_minutes = settings.get('rule_9_window_minutes')
+    # Rule 11 settings (momentum tick breakout)
+    rule_11_enabled = settings.get('rule_11_enabled')
+    rule_11_price_jump = settings.get('rule_11_price_jump')
+    rule_11_window_seconds = settings.get('rule_11_window_seconds')
+    rule_11_volume_threshold = settings.get('rule_11_volume_threshold')
+    rule_11_limit_offset = settings.get('rule_11_limit_offset')
     rsi_bollinger_enabled = settings.get('rsi_bollinger_enabled')
     rsi_bollinger_rsi_length = settings.get('rsi_bollinger_rsi_length')
     rsi_bollinger_rsi_threshold = settings.get('rsi_bollinger_rsi_threshold')
@@ -389,6 +395,30 @@ def upsert_bot_settings(hwnd: int, settings: dict):
         except Exception:
             rsi_bollinger_stop_pct = None
 
+    # Normalize Rule 11
+    if rule_11_enabled is not None:
+        rule_11_enabled = 1 if bool(rule_11_enabled) else 0
+    if rule_11_price_jump is not None:
+        try:
+            rule_11_price_jump = float(rule_11_price_jump)
+        except Exception:
+            rule_11_price_jump = None
+    if rule_11_window_seconds is not None:
+        try:
+            rule_11_window_seconds = int(rule_11_window_seconds)
+        except Exception:
+            rule_11_window_seconds = None
+    if rule_11_volume_threshold is not None:
+        try:
+            rule_11_volume_threshold = int(rule_11_volume_threshold)
+        except Exception:
+            rule_11_volume_threshold = None
+    if rule_11_limit_offset is not None:
+        try:
+            rule_11_limit_offset = float(rule_11_limit_offset)
+        except Exception:
+            rule_11_limit_offset = None
+
     # Normalize IBKR order settings
     if live_trading_enabled is not None:
         live_trading_enabled = 1 if bool(live_trading_enabled) else 0
@@ -497,6 +527,11 @@ def upsert_bot_settings(hwnd: int, settings: dict):
                     rsi_bollinger_bb_stdev = COALESCE(?, rsi_bollinger_bb_stdev),
                     rsi_bollinger_profit_pct = COALESCE(?, rsi_bollinger_profit_pct),
                     rsi_bollinger_stop_pct = COALESCE(?, rsi_bollinger_stop_pct),
+                    rule_11_enabled = COALESCE(?, rule_11_enabled),
+                    rule_11_price_jump = COALESCE(?, rule_11_price_jump),
+                    rule_11_window_seconds = COALESCE(?, rule_11_window_seconds),
+                    rule_11_volume_threshold = COALESCE(?, rule_11_volume_threshold),
+                    rule_11_limit_offset = COALESCE(?, rule_11_limit_offset),
                     live_trading_enabled = COALESCE(?, live_trading_enabled),
                     order_size_type = COALESCE(?, order_size_type),
                     order_size_value = COALESCE(?, order_size_value),
@@ -543,6 +578,11 @@ def upsert_bot_settings(hwnd: int, settings: dict):
                     rsi_bollinger_bb_stdev,
                     rsi_bollinger_profit_pct,
                     rsi_bollinger_stop_pct,
+                    rule_11_enabled,
+                    rule_11_price_jump,
+                    rule_11_window_seconds,
+                    rule_11_volume_threshold,
+                    rule_11_limit_offset,
                     live_trading_enabled,
                     order_size_type,
                     order_size_value,
@@ -560,8 +600,8 @@ def upsert_bot_settings(hwnd: int, settings: dict):
         else:
             cur.execute(
                 """
-                INSERT INTO bots (hwnd, name, ticker, total_pnl, open_direction, open_price, open_time, rule_1_enabled, rule_2_enabled, rule_3_enabled, rule_4_enabled, rule_5_enabled, rule_6_enabled, rule_7_enabled, rule_8_enabled, rule_9_enabled, take_profit_amount, stop_loss_amount, rule_3_drop_count, rule_5_down_minutes, rule_5_reversal_amount, rule_5_scalp_amount, rule_6_down_minutes, rule_6_profit_amount, rule_7_up_minutes, rule_8_buy_offset, rule_8_sell_offset, rule_9_amount, rule_9_flips, rule_9_window_minutes, rsi_bollinger_enabled, rsi_bollinger_rsi_length, rsi_bollinger_rsi_threshold, rsi_bollinger_bb_length, rsi_bollinger_bb_stdev, rsi_bollinger_profit_pct, rsi_bollinger_stop_pct, live_trading_enabled, order_size_type, order_size_value, buy_order_type, sell_order_type, retry_delay_secs, max_retries, min_trade_dollars, validate_conditions_on_retry, default_trade_enabled, meta)
-                VALUES (?, ?, ?, NULL, NULL, NULL, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO bots (hwnd, name, ticker, total_pnl, open_direction, open_price, open_time, rule_1_enabled, rule_2_enabled, rule_3_enabled, rule_4_enabled, rule_5_enabled, rule_6_enabled, rule_7_enabled, rule_8_enabled, rule_9_enabled, take_profit_amount, stop_loss_amount, rule_3_drop_count, rule_5_down_minutes, rule_5_reversal_amount, rule_5_scalp_amount, rule_6_down_minutes, rule_6_profit_amount, rule_7_up_minutes, rule_8_buy_offset, rule_8_sell_offset, rule_9_amount, rule_9_flips, rule_9_window_minutes, rsi_bollinger_enabled, rsi_bollinger_rsi_length, rsi_bollinger_rsi_threshold, rsi_bollinger_bb_length, rsi_bollinger_bb_stdev, rsi_bollinger_profit_pct, rsi_bollinger_stop_pct, rule_11_enabled, rule_11_price_jump, rule_11_window_seconds, rule_11_volume_threshold, rule_11_limit_offset, live_trading_enabled, order_size_type, order_size_value, buy_order_type, sell_order_type, retry_delay_secs, max_retries, min_trade_dollars, validate_conditions_on_retry, default_trade_enabled, meta)
+                VALUES (?, ?, ?, NULL, NULL, NULL, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     hwnd,

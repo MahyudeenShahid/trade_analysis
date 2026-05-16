@@ -126,6 +126,11 @@ def init_db():
             rsi_bollinger_bb_stdev REAL,
             rsi_bollinger_profit_pct REAL,
             rsi_bollinger_stop_pct REAL,
+            rule_11_enabled INTEGER,
+            rule_11_price_jump REAL,
+            rule_11_window_seconds INTEGER,
+            rule_11_volume_threshold INTEGER,
+            rule_11_limit_offset REAL,
             meta TEXT
         )
         """
@@ -171,6 +176,12 @@ def init_db():
     cur.execute(
         "INSERT OR IGNORE INTO app_settings (key, value) VALUES (?, ?)",
         ("signal_source", "screenshot"),
+    )
+
+    # Safety: require a user confirmation before enabling live trading via UI
+    cur.execute(
+        "INSERT OR IGNORE INTO app_settings (key, value) VALUES (?, ?)",
+        ("require_live_confirm", "1"),
     )
 
     # Live orders table — one row per order placed via IBKR

@@ -245,9 +245,32 @@ async def handle_trade_event(trade_dict: dict, bot_row: dict, hwnd: int, get_cur
                 )
                 return
 
+        # Optional maximum trade dollars (safety)
+        max_trade_dollars = float(cfg.get("max_trade_dollars") or 0)
+        if max_trade_dollars > 0 and price is not None:
+            trade_value = qty * float(price)
+            if trade_value > max_trade_dollars:
+                logger.warning(
+                    f"[IBKR] Trade value ${trade_value:.2f} > max ${max_trade_dollars:.2f} — skipping for safety"
+                )
+                return
+
         limit_price: Optional[float] = None
         if order_type == "limit" and price is not None:
             limit_price = float(price)
+            # Apply tiny default offset for buy limits when they equal current mid price
+            try:
+                from ibkr.order_book import get_mid_price
+                mid = get_mid_price(ticker)
+                if direction.lower() == 'buy' and mid is not None and abs(limit_price - float(mid)) < 1e-6:
+                    # prefer user-configured offset (rule_11_limit_offset) else default +$0.01
+                    try:
+                        offset = float(bot_row.get('rule_11_limit_offset') or bot_row.get('limit_offset') or 0.01)
+                    except Exception:
+                        offset = 0.01
+                    limit_price = float(limit_price) + float(offset if offset >= 0 else 0.01)
+            except Exception:
+                pass
 
         retry_delay = float(bot_row.get("retry_delay_secs") or cfg.get("retry_delay_secs") or 5.0)
         max_retries = int(bot_row.get("max_retries") or DEFAULT_MAX_RETRIES)

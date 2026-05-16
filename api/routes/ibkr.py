@@ -95,6 +95,7 @@ def ibkr_get_settings(_auth=Depends(require_api_key)):
         "ibkr_host": cfg.get("ibkr_host", "127.0.0.1"),
         "ibkr_port": cfg.get("ibkr_port", "4002"),
         "ibkr_client_id": cfg.get("ibkr_client_id", "1"),
+        "require_live_confirm": cfg.get("require_live_confirm", "1"),
     }
 
 
@@ -102,6 +103,8 @@ def ibkr_get_settings(_auth=Depends(require_api_key)):
 def ibkr_update_settings(payload: dict, _auth=Depends(require_api_key)):
     """Update IBKR connection settings in app_settings."""
     allowed = {"ibkr_enabled", "ibkr_host", "ibkr_port", "ibkr_client_id"}
+    # allow updating the optional safety toggle
+    allowed.add("require_live_confirm")
     updated = {}
     for key in allowed:
         if key in payload:

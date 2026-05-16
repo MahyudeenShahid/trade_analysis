@@ -5,6 +5,7 @@ Each rule modifies trading behavior based on specific conditions.
 
 from typing import TYPE_CHECKING, Optional
 import math
+import time
 from datetime import datetime
 
 if TYPE_CHECKING:
@@ -403,3 +404,75 @@ def maybe_rsi_bollinger_trade(state: 'TickerState', current_price: float,
     if rsi <= rsi_th and current_price <= lower:
         buy_callback(current_price)
     return True
+
+
+def maybe_rule11_trade(state: 'TickerState', trend: str, current_price: float,
+                       price_jump: Optional[float], window_seconds: Optional[int],
+                       volume_threshold: Optional[int], limit_offset: Optional[float],
+                       price_volume_history: Optional[list],
+                       buy_callback, sell_callback) -> bool:
+    """
+    Rule #11: Momentum tick breakout (very short window).
+    Conservative default implementation: detect an immediate price jump from the previous tick
+    greater than or equal to `price_jump` and execute a buy at `current_price + limit_offset`.
+    Volume threshold is accepted but not enforced if no volume data available.
+    Returns True when rule handled (blocks default logic).
+    """
+    try:
+        pj = float(price_jump) if price_jump is not None else 0.0
+    except (ValueError, TypeError):
+        pj = 0.0
+
+    if pj <= 0:
+        return False
+
+    # Prefer using the provided price+volume history (list of {ts, price, volume}).
+    pv = None
+    try:
+        if isinstance(price_volume_history, list) and price_volume_history:
+            pv = price_volume_history
+        else:
+            # fallback: try to read state.price_history if available (older format)
+            hist = getattr(state, 'price_history', None)
+            if isinstance(hist, list) and len(hist) >= 2:
+                # synthesize volume=0.0 entries for compatibility
+                now = getattr(state, 'last_ts', time.time()) if hasattr(state, 'last_ts') else time.time()
+                pv = []
+                ts_base = now - len(hist)
+                for i, p in enumerate(hist[-int(min(len(hist), 50)):]):
+                    pv.append({'ts': ts_base + i, 'price': float(p), 'volume': 0.0})
+    except Exception:
+        pv = None
+
+    if not pv:
+        return False
+
+    try:
+        prices = [float(x.get('price')) for x in pv if x.get('price') is not None]
+        volumes = [float(x.get('volume') or 0.0) for x in pv]
+    except Exception:
+        return False
+
+    if not prices:
+        return False
+
+    # Compute baseline price (minimum in the window) and aggregate volume
+    try:
+        baseline = min(prices)
+        price_jump_actual = float(current_price) - float(baseline)
+    except Exception:
+        return False
+
+    total_vol = sum(volumes) if volumes else 0.0
+
+    # Volume check (if provided) and price jump check
+    vol_ok = True if (volume_threshold is None or volume_threshold <= 0) else (total_vol >= float(volume_threshold))
+    jump_ok = price_jump_actual >= float(pj)
+
+    if jump_ok and vol_ok:
+        lo = float(limit_offset) if limit_offset is not None else 0.01
+        buy_price = float(current_price) + (lo if lo >= 0 else 0.0)
+        buy_callback(buy_price)
+        return True
+
+    return False

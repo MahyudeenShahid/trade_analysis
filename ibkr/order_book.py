@@ -29,6 +29,10 @@ _subscription_smart_depth: Dict[str, bool] = {}
 _top_subscriptions: Dict[str, object] = {}
 # ticker -> reqId used for reqMktData fallback subscription
 _top_subscription_req_ids: Dict[str, int] = {}
+# ticker -> trade (tick-by-tick) subscription ticker object
+_trade_subscriptions: Dict[str, object] = {}
+# ticker -> reqId used for tick-by-tick trades
+_trade_subscription_req_ids: Dict[str, int] = {}
 # reqId -> ticker mapping for error correlation
 _req_id_to_ticker: Dict[int, str] = {}
 # ticker → unix timestamp of latest depth update
@@ -41,10 +45,13 @@ _last_error_by_ticker: Dict[str, dict] = {}
 _last_error_global: dict = {}
 
 _STALE_SUB_SECONDS = 20.0
+# Price history retention and sampling cadence
 _PRICE_HISTORY_WINDOW_SECONDS = 20 * 60
-_PRICE_SAMPLE_INTERVAL_SECONDS = 60
+# Default min interval between sampled entries (seconds). Many IB updates are faster,
+# but we allow callers to force samples on every update when needed.
+_PRICE_SAMPLE_INTERVAL_SECONDS = 0.25
 
-# ticker -> list of {ts, price} samples (rolling window)
+# ticker -> list of {ts, price, volume} samples (rolling window)
 _price_history: Dict[str, list] = {}
 # ticker -> last sample timestamp (to control sampling cadence)
 _last_price_sample_ts: Dict[str, float] = {}
@@ -140,33 +147,61 @@ def _build_bbo_rows(top_book: Optional[dict]):
     return bids, asks
 
 
-def _record_price_sample(ticker: str, price: Optional[float], ts: Optional[float] = None):
+def _record_price_sample(ticker: str, price: Optional[float], volume: Optional[float] = 0.0, ts: Optional[float] = None, force: bool = False):
+    """Record a timestamped price sample with optional associated volume.
+
+    - `force=True` bypasses the sampling cadence and records the sample immediately.
+    """
     if price is None:
         return
 
     ts = float(ts if ts is not None else time.time())
     last_ts = _last_price_sample_ts.get(ticker)
-    if last_ts is not None and (ts - last_ts) < _PRICE_SAMPLE_INTERVAL_SECONDS:
+    if not force and last_ts is not None and (ts - last_ts) < _PRICE_SAMPLE_INTERVAL_SECONDS:
         return
 
     _last_price_sample_ts[ticker] = ts
     history = _price_history.setdefault(ticker, [])
-    history.append({"ts": ts, "price": float(price)})
+    history.append({"ts": ts, "price": float(price), "volume": float(volume or 0.0)})
 
     cutoff = ts - _PRICE_HISTORY_WINDOW_SECONDS
     while history and history[0].get("ts", 0) < cutoff:
         history.pop(0)
 
 
-def get_price_history(ticker: str, lookback_seconds: int = _PRICE_HISTORY_WINDOW_SECONDS) -> list:
-    """Return recent price samples for RSI/Bollinger calculations."""
+def get_price_history(ticker: str, lookback_seconds: int = _PRICE_HISTORY_WINDOW_SECONDS, raw: bool = False) -> list:
+    """Return recent price samples.
+
+    If `raw` is False (default) returns a list of prices. If `raw` is True returns
+    list of dicts `{ts, price, volume}` within the lookback window.
+    """
     ticker = str(ticker or "").strip().upper()
     history = _price_history.get(ticker) or []
     if not history:
         return []
 
     cutoff = time.time() - float(lookback_seconds or _PRICE_HISTORY_WINDOW_SECONDS)
-    return [row.get("price") for row in history if row.get("ts", 0) >= cutoff]
+    rows = [row for row in history if row.get("ts", 0) >= cutoff]
+    return rows if raw else [row.get("price") for row in rows]
+
+
+def get_price_volume_history(ticker: str, lookback_seconds: int = _PRICE_SAMPLE_INTERVAL_SECONDS * 20) -> list:
+    """Return recent timestamped `{ts, price, volume}` samples for a ticker.
+
+    Default lookback is short (few seconds) to support tick-level strategies.
+    """
+    return get_price_history(ticker, lookback_seconds=lookback_seconds, raw=True)
+
+
+def get_aggregate_volume(ticker: str, lookback_seconds: int = 60) -> float:
+    """Return aggregated sample volume over the past `lookback_seconds` seconds."""
+    rows = get_price_volume_history(ticker, lookback_seconds=lookback_seconds)
+    if not rows:
+        return 0.0
+    try:
+        return sum(float(r.get('volume', 0.0) or 0.0) for r in rows)
+    except Exception:
+        return 0.0
 
 
 def _cancel_top_of_book_subscription(ticker: str):
@@ -182,6 +217,17 @@ def _cancel_top_of_book_subscription(ticker: str):
     if sub is not None and ib is not None:
         try:
             ib.cancelMktData(sub.contract)
+        except Exception:
+            pass
+    # also cancel trade subscription if present
+    tsub = _trade_subscriptions.pop(ticker, None)
+    treq = _trade_subscription_req_ids.pop(ticker, None)
+    if treq is not None:
+        _req_id_to_ticker.pop(treq, None)
+    if tsub is not None and ib is not None:
+        try:
+            # best-effort: cancel tick-by-tick stream
+            ib.cancelTickByTickData(tsub.contract)
         except Exception:
             pass
 
@@ -242,7 +288,8 @@ def _ensure_top_of_book_subscription(ticker: str, contract):
             mid_price = bid
         elif ask is not None:
             mid_price = ask
-        _record_price_sample(ticker, mid_price, ts)
+        # record price sample and include reported top-of-book sizes as approximate volume
+        _record_price_sample(ticker, mid_price, volume=(bid_size + ask_size) if (bid_size or ask_size) else 0.0, ts=ts, force=True)
 
         # Only overwrite cached rows while L2 is absent; once true DOM appears,
         # keep L2 as authoritative.
@@ -261,6 +308,70 @@ def _ensure_top_of_book_subscription(ticker: str, contract):
             _last_error_by_ticker.pop(ticker, None)
 
     top_ticker.updateEvent += on_top_update
+    # Also try to subscribe to tick-by-tick 'Last' ticks to capture trade sizes
+    try:
+        # ib.reqTickByTickData(contract, "Last", 0, False) is preferred, but wrappers vary.
+        # Use best-effort and attach updateEvent like other tickers.
+        trade_ticker = None
+        try:
+            trade_ticker = ib.reqTickByTickData(contract, "Last", 0, False)
+        except Exception:
+            try:
+                # Alternative name used by some wrappers
+                trade_ticker = ib.reqTickByTick(contract, "Last")
+            except Exception:
+                trade_ticker = None
+
+        if trade_ticker is not None:
+            _trade_subscriptions[ticker] = trade_ticker
+            try:
+                # correlate reqId if wrapper exposes mapping
+                req_map = getattr(getattr(ib, "wrapper", None), "ticker2ReqId", None)
+                tmap = req_map.get("tickByTick", {}) if hasattr(req_map, "get") else {}
+                req_id_raw = tmap.get(trade_ticker) if hasattr(tmap, "get") else None
+                if req_id_raw is not None:
+                    req_id = int(req_id_raw)
+                    _trade_subscription_req_ids[ticker] = req_id
+                    _req_id_to_ticker[req_id] = ticker
+            except Exception:
+                pass
+
+            def on_trade_tick(ticker_obj):
+                # best-effort extraction of trade price/size from ticker_obj
+                try:
+                    price = None
+                    size = None
+                    # common attributes
+                    price = getattr(ticker_obj, 'price', None) or getattr(ticker_obj, 'last', None) or getattr(ticker_obj, 'price', None)
+                    size = getattr(ticker_obj, 'size', None) or getattr(ticker_obj, 'lastSize', None) or getattr(ticker_obj, 'size', None)
+                    # fallback: some wrappers place the data in a 'tick' or 'data' attr
+                    if price is None:
+                        inner = getattr(ticker_obj, 'tick', None) or getattr(ticker_obj, 'data', None)
+                        if inner is not None:
+                            price = getattr(inner, 'price', None) or inner.get('price') if isinstance(inner, dict) else None
+                            size = getattr(inner, 'size', None) or inner.get('size') if isinstance(inner, dict) else None
+                    try:
+                        price_f = float(price) if price is not None else None
+                    except Exception:
+                        price_f = None
+                    try:
+                        size_f = float(size) if size is not None else 0.0
+                    except Exception:
+                        size_f = 0.0
+                    if price_f is not None:
+                        _record_price_sample(ticker, price_f, volume=size_f, ts=time.time(), force=True)
+                except Exception:
+                    pass
+
+            try:
+                trade_ticker.updateEvent += on_trade_tick
+            except Exception:
+                try:
+                    trade_ticker.updateEvent = on_trade_tick
+                except Exception:
+                    pass
+    except Exception:
+        pass
 
 
 def resolve_ticker_for_req_id(req_id) -> Optional[str]:
@@ -455,7 +566,22 @@ async def subscribe_depth(
                 mid_price = float(best_bid)
             elif best_ask is not None:
                 mid_price = float(best_ask)
-            _record_price_sample(ticker, mid_price)
+            # when L2 updates, record sample and include total displayed depth as approximate volume
+            try:
+                total_vol = 0.0
+                for r in (ticker_obj.domBids or []):
+                    try:
+                        total_vol += float(getattr(r, 'size', 0) or 0)
+                    except Exception:
+                        pass
+                for r in (ticker_obj.domAsks or []):
+                    try:
+                        total_vol += float(getattr(r, 'size', 0) or 0)
+                    except Exception:
+                        pass
+            except Exception:
+                total_vol = 0.0
+            _record_price_sample(ticker, mid_price, volume=total_vol, force=True)
 
         depth_ticker.updateEvent += on_depth_update
         logger.info(

@@ -98,6 +98,13 @@ class TradeSimulator:
                   rsi_bollinger_profit_pct: Optional[float] = None,
                   rsi_bollinger_stop_pct: Optional[float] = None,
                   rsi_bollinger_price_history: Optional[list] = None,
+                  # Rule 11: momentum tick breakout
+                  rule_11_enabled: bool = False,
+                  rule_11_price_jump: Optional[float] = None,
+                  rule_11_window_seconds: Optional[int] = None,
+                  rule_11_volume_threshold: Optional[int] = None,
+                  rule_11_limit_offset: Optional[float] = None,
+                  rule_11_price_history: Optional[list] = None,
                   rule_4_start_time: Optional[str] = None,
                   rule_4_end_time: Optional[str] = None,
                   rule_4_days=None,
@@ -220,6 +227,16 @@ class TradeSimulator:
                                                rule_9_flips, rule_9_window_minutes, 
                                                buy_cb, sell_cb):
                         return self.summary()
+                except Exception:
+                    pass
+
+            # RULE #11: momentum tick breakout (price jump + volume) — placeholder implementation
+            if rule_11_enabled:
+                try:
+                    # Call rule implementation; it should return True if it handled the signal
+                    if hasattr(rules, 'maybe_rule11_trade'):
+                        if rules.maybe_rule11_trade(state, trend, price, rule_11_price_jump, rule_11_window_seconds, rule_11_volume_threshold, rule_11_limit_offset, rule_11_price_history, buy_cb, sell_cb):
+                            return self.summary()
                 except Exception:
                     pass
             
@@ -377,6 +394,19 @@ class TradeSimulator:
         sell_cb = lambda p, win_reason=None: self._sell(ticker, p, win_reason)
         return rules.maybe_rule9_trade(state, trend, current_price, amount, 
                                        flips, window_minutes, buy_cb, sell_cb)
+
+    def maybe_rule11_trade(self, ticker: str, trend: str, current_price: float,
+                          price_jump: Optional[float] = None, window_seconds: Optional[int] = None,
+                          volume_threshold: Optional[int] = None, limit_offset: Optional[float] = None) -> bool:
+        """Direct invocation of Rule #11 (momentum tick breakout)."""
+        state = self.state_manager.get(ticker)
+        if not state:
+            return False
+        buy_cb = lambda p: self._buy(ticker, p)
+        sell_cb = lambda p, win_reason=None: self._sell(ticker, p, win_reason)
+        if hasattr(rules, 'maybe_rule11_trade'):
+            return rules.maybe_rule11_trade(state, trend, current_price, price_jump, window_seconds, volume_threshold, limit_offset, buy_cb, sell_cb)
+        return False
     
     # ---------------------------------------------------------------
     # SUMMARY & RESET
