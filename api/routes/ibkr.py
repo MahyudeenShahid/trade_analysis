@@ -2,12 +2,15 @@
 
 import asyncio
 import logging
+import math
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import JSONResponse
 
 from api.dependencies import require_api_key
+from config.time_utils import parse_timestamp
 from db.queries import get_app_settings, set_app_setting, get_live_orders, count_live_orders
 
 logger = logging.getLogger(__name__)
@@ -354,5 +357,121 @@ async def ibkr_historical_data(
 
     except Exception as e:
         logger.error(f"[IBKR] Historical data failed for {ticker}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+def _to_utc_naive(dt: datetime) -> datetime:
+    if dt.tzinfo is None:
+        return dt
+    return dt.astimezone(timezone.utc).replace(tzinfo=None)
+
+
+def _format_ibkr_end(dt: datetime) -> str:
+    return dt.strftime("%Y%m%d %H:%M:%S")
+
+
+def _duration_from_range(start_dt: datetime, end_dt: datetime) -> str:
+    total_seconds = max(1, int((end_dt - start_dt).total_seconds()))
+    if total_seconds <= 86400:
+        return f"{total_seconds} S"
+    total_days = max(1, int(math.ceil(total_seconds / 86400)))
+    if total_days <= 7:
+        return f"{total_days} D"
+    total_weeks = max(1, int(math.ceil(total_days / 7)))
+    if total_weeks <= 4:
+        return f"{total_weeks} W"
+    total_months = max(1, int(math.ceil(total_days / 30)))
+    return f"{total_months} M"
+
+
+@router.get("/replay/{ticker}")
+async def ibkr_replay_window(
+    ticker: str,
+    start: Optional[str] = None,
+    end: Optional[str] = None,
+    buy_time: Optional[str] = None,
+    sell_time: Optional[str] = None,
+    buffer_min: int = 10,
+    bar_size: str = "1 min",
+    _auth=Depends(require_api_key),
+):
+    """Fetch historical bars for a focused replay window.
+
+    Args:
+        ticker: Stock symbol (e.g. AAPL)
+        start/end: Optional ISO timestamps for the desired window
+        buy_time/sell_time: Optional trade timestamps used when start/end are missing
+        buffer_min: Minutes to pad before/after the trade window
+        bar_size: Bar size setting (e.g. "1 min")
+
+    Returns:
+        {ok: true, ticker, start, end, bars}
+    """
+    from ibkr.client import ib, is_connected
+
+    if not is_connected() or ib is None:
+        raise HTTPException(status_code=503, detail="Not connected to IB Gateway")
+
+    start_dt = parse_timestamp(start) or parse_timestamp(buy_time)
+    end_dt = parse_timestamp(end) or parse_timestamp(sell_time)
+
+    if start_dt is None and end_dt is None:
+        # Fall back to default historical range if no window is provided.
+        return await ibkr_historical_data(ticker, duration="1 D", bar_size=bar_size)
+
+    if start_dt is None and end_dt is not None:
+        start_dt = end_dt - timedelta(minutes=max(1, int(buffer_min)))
+    if end_dt is None and start_dt is not None:
+        end_dt = start_dt + timedelta(minutes=max(1, int(buffer_min)))
+
+    if start_dt is None or end_dt is None:
+        raise HTTPException(status_code=400, detail="Missing valid replay timestamps")
+
+    buffer_delta = timedelta(minutes=max(0, int(buffer_min)))
+    start_dt = start_dt - buffer_delta
+    end_dt = end_dt + buffer_delta
+    if end_dt < start_dt:
+        start_dt, end_dt = end_dt, start_dt
+
+    start_dt = _to_utc_naive(start_dt)
+    end_dt = _to_utc_naive(end_dt)
+    duration = _duration_from_range(start_dt, end_dt)
+    end_str = _format_ibkr_end(end_dt)
+
+    try:
+        from ib_async import Stock
+        contract = Stock(ticker.upper(), "SMART", "USD")
+        await ib.qualifyContractsAsync(contract)
+
+        bars = await ib.reqHistoricalDataAsync(
+            contract,
+            endDateTime=end_str,
+            durationStr=duration,
+            barSizeSetting=bar_size,
+            whatToShow="TRADES",
+            useRTH=True,
+            formatDate=1,
+        )
+
+        result = []
+        for bar in bars:
+            result.append({
+                "time": bar.date.isoformat() if hasattr(bar.date, 'isoformat') else str(bar.date),
+                "open": bar.open,
+                "high": bar.high,
+                "low": bar.low,
+                "close": bar.close,
+                "volume": bar.volume,
+            })
+
+        return {
+            "ok": True,
+            "ticker": ticker.upper(),
+            "start": start_dt.isoformat() + "Z",
+            "end": end_dt.isoformat() + "Z",
+            "bars": result,
+        }
+    except Exception as e:
+        logger.error(f"[IBKR] Replay window failed for {ticker}: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
