@@ -98,6 +98,9 @@ class TradeSimulator:
                   rsi_bollinger_profit_pct: Optional[float] = None,
                   rsi_bollinger_stop_pct: Optional[float] = None,
                   rsi_bollinger_price_history: Optional[list] = None,
+                  rsi_bollinger_trailing_stop_enabled: bool = False,
+                  rsi_bollinger_trailing_stop_pct: Optional[float] = None,
+                  rsi_bollinger_rsi_slope_enabled: bool = False,
                   # Rule 11: momentum tick breakout
                   rule_11_enabled: bool = False,
                   rule_11_price_jump: Optional[float] = None,
@@ -105,6 +108,22 @@ class TradeSimulator:
                   rule_11_volume_threshold: Optional[int] = None,
                   rule_11_limit_offset: Optional[float] = None,
                   rule_11_price_history: Optional[list] = None,
+                  rule_11_profit_pct: Optional[float] = None,
+                  rule_11_stop_pct: Optional[float] = None,
+                  rule_11_stop_enabled: Optional[bool] = None,
+                  rule_11_only_profit: Optional[bool] = None,
+                  rule_11_trailing_stop_enabled: Optional[bool] = None,
+                  rule_11_trailing_stop_pct: Optional[float] = None,
+                  rule_11_cooldown_enabled: Optional[bool] = None,
+                  rule_11_cooldown_minutes: Optional[float] = None,
+                  rule_11_size_multiplier: Optional[float] = None,
+                  rule_11_daily_max_loss: Optional[float] = None,
+                  rule_11_max_losses_per_day: Optional[int] = None,
+                  rule_11_trend_enabled: Optional[bool] = None,
+                  rule_11_trend_ma: Optional[int] = None,
+                  rule_11_liquidity_enabled: Optional[bool] = None,
+                  rule_11_min_avg_volume: Optional[int] = None,
+                  rule_11_min_tick_density: Optional[int] = None,
                   rule_4_start_time: Optional[str] = None,
                   rule_4_end_time: Optional[str] = None,
                   rule_4_days=None,
@@ -173,6 +192,27 @@ class TradeSimulator:
                         rsi_bollinger_bb_stdev,
                         rsi_bollinger_profit_pct,
                         rsi_bollinger_stop_pct,
+                        None,  # stop_enabled
+                        None,  # strict_enabled
+                        None,  # strict_bars
+                        None,  # bounce_enabled
+                        None,  # bounce_pct
+                        None,  # cooldown_enabled
+                        None,  # cooldown_minutes
+                        None,  # time_exit_enabled
+                        None,  # time_exit_minutes
+                        None,  # only_profit
+                        None,  # daily_max_loss
+                        None,  # max_losses_per_day
+                        None,  # size_multiplier
+                        None,  # trend_enabled
+                        None,  # trend_ma
+                        None,  # liquidity_enabled
+                        None,  # min_avg_volume
+                        None,  # avg_volume
+                        rsi_bollinger_trailing_stop_enabled,
+                        rsi_bollinger_trailing_stop_pct,
+                        rsi_bollinger_rsi_slope_enabled,
                         buy_cb,
                         sell_cb,
                     ):
@@ -230,12 +270,24 @@ class TradeSimulator:
                 except Exception:
                     pass
 
-            # RULE #11: momentum tick breakout (price jump + volume) — placeholder implementation
+            # RULE #11: momentum tick breakout (price jump + volume)
             if rule_11_enabled:
                 try:
                     # Call rule implementation; it should return True if it handled the signal
                     if hasattr(rules, 'maybe_rule11_trade'):
-                        if rules.maybe_rule11_trade(state, trend, price, rule_11_price_jump, rule_11_window_seconds, rule_11_volume_threshold, rule_11_limit_offset, rule_11_price_history, buy_cb, sell_cb):
+                        if rules.maybe_rule11_trade(
+                            state, trend, price,
+                            rule_11_price_jump, rule_11_window_seconds, rule_11_volume_threshold, rule_11_limit_offset,
+                            rule_11_price_history,
+                            rule_11_profit_pct, rule_11_stop_pct, rule_11_stop_enabled, rule_11_only_profit,
+                            rule_11_trailing_stop_enabled, rule_11_trailing_stop_pct,
+                            rule_11_cooldown_enabled, rule_11_cooldown_minutes,
+                            rule_11_size_multiplier, rule_11_daily_max_loss, rule_11_max_losses_per_day,
+                            rule_11_trend_enabled, rule_11_trend_ma, rule_11_liquidity_enabled,
+                            rule_11_min_avg_volume, getattr(state, 'avg_volume', None),
+                            rule_11_min_tick_density, state.price_history,
+                            buy_cb, sell_cb
+                        ):
                             return self.summary()
                 except Exception:
                     pass

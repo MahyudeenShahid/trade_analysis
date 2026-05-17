@@ -108,6 +108,24 @@ class TradingCore:
                 self.on_trade_callback(trade)
             except Exception:
                 pass
+        # Update per-day loss counters when a SELL is logged with negative profit
+        try:
+            if direction == 'sell' and profit is not None and profit < 0:
+                # Use UTC date string to bucket daily losses
+                today = datetime.utcnow().date().isoformat()
+                if getattr(state, 'last_loss_day', None) != today:
+                    state.daily_loss_total = 0.0
+                    state.daily_loss_count = 0
+                    state.last_loss_day = today
+                # Accumulate absolute loss amount
+                try:
+                    loss_amt = float(-profit)
+                except Exception:
+                    loss_amt = 0.0
+                state.daily_loss_total = float(state.daily_loss_total or 0.0) + loss_amt
+                state.daily_loss_count = int((state.daily_loss_count or 0) + 1)
+        except Exception:
+            pass
     
     def is_trading_hours(self, start_time_str=None, end_time_str=None, allowed_days=None) -> bool:
         """Check if current time is within trading hours.

@@ -58,11 +58,17 @@ class TradeSimulator:
     def _is_trading_hours(self, start_time=None, end_time=None, days=None) -> bool:
         return self.core.is_trading_hours(start_time, end_time, days)
     
-    def _buy(self, key: str, price: float):
+    def _buy(self, key: str, price: float, size_multiplier: Optional[float] = None):
         """Execute buy operation."""
         state = self.state_manager.get(key)
         if state:
             self.core.buy(key, price, state)
+            # store size multiplier on the position for downstream use
+            try:
+                if state.position is not None and size_multiplier is not None:
+                    state.position['size_multiplier'] = float(size_multiplier)
+            except Exception:
+                pass
     
     def _sell(self, key: str, price: float, win_reason: Optional[str] = None):
         """Execute sell operation."""
@@ -97,7 +103,28 @@ class TradeSimulator:
                   rsi_bollinger_bb_stdev: Optional[float] = None,
                   rsi_bollinger_profit_pct: Optional[float] = None,
                   rsi_bollinger_stop_pct: Optional[float] = None,
+                  rsi_bollinger_stop_enabled: Optional[bool] = None,
+                  rsi_bollinger_strict_enabled: Optional[bool] = None,
+                  rsi_bollinger_strict_bars: Optional[int] = None,
+                  rsi_bollinger_bounce_enabled: Optional[bool] = None,
+                  rsi_bollinger_bounce_pct: Optional[float] = None,
+                  rsi_bollinger_cooldown_enabled: Optional[bool] = None,
+                  rsi_bollinger_cooldown_minutes: Optional[float] = None,
+                  rsi_bollinger_time_exit_enabled: Optional[bool] = None,
+                  rsi_bollinger_time_exit_minutes: Optional[float] = None,
+                  rsi_bollinger_only_profit: Optional[bool] = None,
                   rsi_bollinger_price_history: Optional[list] = None,
+                  rsi_bollinger_daily_max_loss: Optional[float] = None,
+                  rsi_bollinger_max_losses_per_day: Optional[int] = None,
+                  rsi_bollinger_size_multiplier: Optional[float] = None,
+                  rsi_bollinger_trend_enabled: Optional[bool] = None,
+                  rsi_bollinger_trend_ma: Optional[int] = None,
+                  rsi_bollinger_liquidity_enabled: Optional[bool] = None,
+                  rsi_bollinger_min_avg_volume: Optional[int] = None,
+                  rsi_bollinger_avg_volume: Optional[float] = None,
+                  rsi_bollinger_trailing_stop_enabled: bool = False,
+                  rsi_bollinger_trailing_stop_pct: Optional[float] = None,
+                  rsi_bollinger_rsi_slope_enabled: bool = False,
                   rule_4_start_time: Optional[str] = None,
                   rule_4_end_time: Optional[str] = None,
                   rule_4_days=None,
@@ -131,7 +158,7 @@ class TradeSimulator:
         
         # Create callback wrappers
         sell_cb = lambda p, win_reason=None: self._sell(state_key, p, win_reason)
-        buy_cb = lambda p: self._buy(state_key, p)
+        buy_cb = lambda p: self._buy(state_key, p, size_multiplier=rsi_bollinger_size_multiplier)
         
         # RULE #1: take-profit sell (works alongside default logic)
         if rule_1_enabled:
@@ -172,6 +199,27 @@ class TradeSimulator:
                         rsi_bollinger_bb_stdev,
                         rsi_bollinger_profit_pct,
                         rsi_bollinger_stop_pct,
+                        rsi_bollinger_stop_enabled,
+                        rsi_bollinger_strict_enabled,
+                        rsi_bollinger_strict_bars,
+                        rsi_bollinger_bounce_enabled,
+                        rsi_bollinger_bounce_pct,
+                        rsi_bollinger_cooldown_enabled,
+                        rsi_bollinger_cooldown_minutes,
+                        rsi_bollinger_time_exit_enabled,
+                        rsi_bollinger_time_exit_minutes,
+                        rsi_bollinger_only_profit,
+                        rsi_bollinger_daily_max_loss,
+                        rsi_bollinger_max_losses_per_day,
+                        rsi_bollinger_size_multiplier,
+                        rsi_bollinger_trend_enabled,
+                        rsi_bollinger_trend_ma,
+                        rsi_bollinger_liquidity_enabled,
+                        rsi_bollinger_min_avg_volume,
+                        rsi_bollinger_avg_volume,
+                        rsi_bollinger_trailing_stop_enabled,
+                        rsi_bollinger_trailing_stop_pct,
+                        rsi_bollinger_rsi_slope_enabled,
                         buy_cb,
                         sell_cb,
                     ):

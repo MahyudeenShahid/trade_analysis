@@ -27,6 +27,17 @@ class TickerState:
 
         # Price history for RSI/Bollinger calculations (rolling window)
         self.price_history: List[float] = []
+
+        # Rule 10 (RSI + Bollinger) state
+        self.rsi_bollinger_peak_price: Optional[float] = None
+        self.rsi_bollinger_oversold_count: int = 0
+        self.rsi_bollinger_waiting_bounce: bool = False
+        self.rsi_bollinger_trigger_price: Optional[float] = None
+        self.rsi_bollinger_last_loss_time: Optional[datetime] = None
+        # Daily loss tracking (for per-bot daily caps)
+        self.daily_loss_total: float = 0.0
+        self.daily_loss_count: int = 0
+        self.last_loss_day: Optional[str] = None  # ISO date string (YYYY-MM-DD)
         
         # Rule 5 state
         self.rule5_down_start: Optional[datetime] = None
@@ -66,6 +77,11 @@ class TickerState:
             "last_price": self.last_price,
             "peak_price": self.peak_price,
             "drop_count": self.drop_count,
+            "rsi_bollinger_peak_price": self.rsi_bollinger_peak_price,
+            "rsi_bollinger_oversold_count": self.rsi_bollinger_oversold_count,
+            "rsi_bollinger_waiting_bounce": self.rsi_bollinger_waiting_bounce,
+            "rsi_bollinger_trigger_price": self.rsi_bollinger_trigger_price,
+            "rsi_bollinger_last_loss_time": self.rsi_bollinger_last_loss_time,
             "rule5_down_start": self.rule5_down_start,
             "rule5_ready_for_reversal": self.rule5_ready_for_reversal,
             "rule5_reversal_active": self.rule5_reversal_active,
@@ -98,6 +114,14 @@ class TickerState:
         state.last_price = data.get("last_price")
         state.peak_price = data.get("peak_price")
         state.drop_count = data.get("drop_count", 0)
+        state.rsi_bollinger_peak_price = data.get("rsi_bollinger_peak_price")
+        state.rsi_bollinger_oversold_count = data.get("rsi_bollinger_oversold_count", 0)
+        state.rsi_bollinger_waiting_bounce = data.get("rsi_bollinger_waiting_bounce", False)
+        state.rsi_bollinger_trigger_price = data.get("rsi_bollinger_trigger_price")
+        state.rsi_bollinger_last_loss_time = data.get("rsi_bollinger_last_loss_time")
+        state.daily_loss_total = data.get("daily_loss_total", 0.0)
+        state.daily_loss_count = data.get("daily_loss_count", 0)
+        state.last_loss_day = data.get("last_loss_day")
         state.rule5_down_start = data.get("rule5_down_start")
         state.rule5_ready_for_reversal = data.get("rule5_ready_for_reversal", False)
         state.rule5_reversal_active = data.get("rule5_reversal_active", False)

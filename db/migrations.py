@@ -126,11 +126,40 @@ def init_db():
             rsi_bollinger_bb_stdev REAL,
             rsi_bollinger_profit_pct REAL,
             rsi_bollinger_stop_pct REAL,
+            rsi_bollinger_stop_enabled INTEGER,
+            rsi_bollinger_strict_enabled INTEGER,
+            rsi_bollinger_strict_bars INTEGER,
+            rsi_bollinger_bounce_enabled INTEGER,
+            rsi_bollinger_bounce_pct REAL,
+            rsi_bollinger_cooldown_enabled INTEGER,
+            rsi_bollinger_cooldown_minutes REAL,
+            rsi_bollinger_time_exit_enabled INTEGER,
+            rsi_bollinger_time_exit_minutes REAL,
+            rsi_bollinger_only_profit INTEGER,
             rule_11_enabled INTEGER,
             rule_11_price_jump REAL,
             rule_11_window_seconds INTEGER,
             rule_11_volume_threshold INTEGER,
             rule_11_limit_offset REAL,
+            rule_11_profit_pct REAL DEFAULT 0.2,
+            rule_11_stop_pct REAL DEFAULT 0.4,
+            rule_11_stop_enabled INTEGER DEFAULT 1,
+            rule_11_only_profit INTEGER DEFAULT 0,
+            rule_11_trailing_stop_enabled INTEGER DEFAULT 0,
+            rule_11_trailing_stop_pct REAL DEFAULT 0.1,
+            rule_11_cooldown_enabled INTEGER DEFAULT 0,
+            rule_11_cooldown_minutes REAL DEFAULT 5.0,
+            rule_11_size_multiplier REAL DEFAULT 1.0,
+            rule_11_daily_max_loss REAL DEFAULT 0.0,
+            rule_11_max_losses_per_day INTEGER DEFAULT 0,
+            rule_11_trend_enabled INTEGER DEFAULT 0,
+            rule_11_trend_ma INTEGER DEFAULT 50,
+            rule_11_liquidity_enabled INTEGER DEFAULT 0,
+            rule_11_min_avg_volume INTEGER DEFAULT 0,
+            rule_11_min_tick_density INTEGER DEFAULT 3,
+            rsi_bollinger_trailing_stop_enabled INTEGER DEFAULT 0,
+            rsi_bollinger_trailing_stop_pct REAL DEFAULT 0.1,
+            rsi_bollinger_rsi_slope_enabled INTEGER DEFAULT 0,
             meta TEXT
         )
         """
@@ -144,6 +173,31 @@ def init_db():
         )
         """
     )
+
+    # Migration: ensure new Rule 10 columns exist on bots table
+    try:
+        cur.execute("PRAGMA table_info(bots)")
+        existing_bots = [r[1] for r in cur.fetchall()]
+        bot_additions = [
+            ("rsi_bollinger_stop_enabled", "INTEGER"),
+            ("rsi_bollinger_strict_enabled", "INTEGER"),
+            ("rsi_bollinger_strict_bars", "INTEGER"),
+            ("rsi_bollinger_bounce_enabled", "INTEGER"),
+            ("rsi_bollinger_bounce_pct", "REAL"),
+            ("rsi_bollinger_cooldown_enabled", "INTEGER"),
+            ("rsi_bollinger_cooldown_minutes", "REAL"),
+            ("rsi_bollinger_time_exit_enabled", "INTEGER"),
+            ("rsi_bollinger_time_exit_minutes", "REAL"),
+            ("rsi_bollinger_only_profit", "INTEGER"),
+        ]
+        for col, typ in bot_additions:
+            if col not in existing_bots:
+                try:
+                    cur.execute(f"ALTER TABLE bots ADD COLUMN {col} {typ}")
+                except Exception:
+                    pass
+    except Exception:
+        pass
     cur.execute(
         "INSERT OR IGNORE INTO app_settings (key, value) VALUES (?, ?)",
         ("time_mode", "local"),
@@ -242,6 +296,50 @@ def init_db():
     except Exception:
         pass
 
+    # Trade replay cache — saved bars and order book snapshots per trade
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS trade_replays (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            trade_ref_id    TEXT UNIQUE,
+            ticker          TEXT,
+            start_ts        TEXT,
+            end_ts          TEXT,
+            bar_size        TEXT,
+            bars            TEXT,
+            order_book      TEXT,
+            created_at      TEXT
+        )
+        """
+    )
+    try:
+        cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_trade_replays_ref ON trade_replays (trade_ref_id)")
+    except Exception:
+        pass
+
+    # Migration: ensure new columns exist in trade_replays
+    try:
+        cur.execute("PRAGMA table_info(trade_replays)")
+        existing_replays = [r[1] for r in cur.fetchall()]
+        replay_additions = [
+            ("trade_ref_id", "TEXT"),
+            ("ticker", "TEXT"),
+            ("start_ts", "TEXT"),
+            ("end_ts", "TEXT"),
+            ("bar_size", "TEXT"),
+            ("bars", "TEXT"),
+            ("order_book", "TEXT"),
+            ("created_at", "TEXT"),
+        ]
+        for col, typ in replay_additions:
+            if col not in existing_replays:
+                try:
+                    cur.execute(f"ALTER TABLE trade_replays ADD COLUMN {col} {typ}")
+                except Exception:
+                    pass
+    except Exception:
+        pass
+
     # Migration: ensure new columns exist in bots
     try:
         cur.execute("PRAGMA table_info(bots)")
@@ -289,6 +387,32 @@ def init_db():
             ("validate_conditions_on_retry", "INTEGER DEFAULT 1"),
             # Smart order management
             ("cancel_on_trend_reversal", "INTEGER DEFAULT 0"),
+            ("rsi_bollinger_daily_max_loss", "REAL"),
+            ("rsi_bollinger_max_losses_per_day", "INTEGER"),
+            ("rsi_bollinger_size_multiplier", "REAL"),
+            ("rsi_bollinger_trend_enabled", "INTEGER"),
+            ("rsi_bollinger_trend_ma", "INTEGER"),
+            ("rsi_bollinger_liquidity_enabled", "INTEGER"),
+            ("rsi_bollinger_min_avg_volume", "INTEGER"),
+            ("rsi_bollinger_trailing_stop_enabled", "INTEGER DEFAULT 0"),
+            ("rsi_bollinger_trailing_stop_pct", "REAL DEFAULT 0.1"),
+            ("rsi_bollinger_rsi_slope_enabled", "INTEGER DEFAULT 0"),
+            ("rule_11_profit_pct", "REAL DEFAULT 0.2"),
+            ("rule_11_stop_pct", "REAL DEFAULT 0.4"),
+            ("rule_11_stop_enabled", "INTEGER DEFAULT 1"),
+            ("rule_11_only_profit", "INTEGER DEFAULT 0"),
+            ("rule_11_trailing_stop_enabled", "INTEGER DEFAULT 0"),
+            ("rule_11_trailing_stop_pct", "REAL DEFAULT 0.1"),
+            ("rule_11_cooldown_enabled", "INTEGER DEFAULT 0"),
+            ("rule_11_cooldown_minutes", "REAL DEFAULT 5.0"),
+            ("rule_11_size_multiplier", "REAL DEFAULT 1.0"),
+            ("rule_11_daily_max_loss", "REAL DEFAULT 0.0"),
+            ("rule_11_max_losses_per_day", "INTEGER DEFAULT 0"),
+            ("rule_11_trend_enabled", "INTEGER DEFAULT 0"),
+            ("rule_11_trend_ma", "INTEGER DEFAULT 50"),
+            ("rule_11_liquidity_enabled", "INTEGER DEFAULT 0"),
+            ("rule_11_min_avg_volume", "INTEGER DEFAULT 0"),
+            ("rule_11_min_tick_density", "INTEGER DEFAULT 3"),
         ]
         for col, typ in bot_additions:
             if col not in existing_bots:

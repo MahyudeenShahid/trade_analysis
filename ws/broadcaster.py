@@ -119,6 +119,16 @@ async def broadcaster_loop():
                         rsi_bollinger_bb_stdev = None
                         rsi_bollinger_profit_pct = None
                         rsi_bollinger_stop_pct = None
+                        rsi_bollinger_stop_enabled = None
+                        rsi_bollinger_strict_enabled = None
+                        rsi_bollinger_strict_bars = None
+                        rsi_bollinger_bounce_enabled = None
+                        rsi_bollinger_bounce_pct = None
+                        rsi_bollinger_cooldown_enabled = None
+                        rsi_bollinger_cooldown_minutes = None
+                        rsi_bollinger_time_exit_enabled = None
+                        rsi_bollinger_time_exit_minutes = None
+                        rsi_bollinger_only_profit = None
 
                         for bot in bot_list:
                             try:
@@ -159,12 +169,48 @@ async def broadcaster_loop():
                                 rsi_bollinger_bb_stdev = bot.get('rsi_bollinger_bb_stdev')
                                 rsi_bollinger_profit_pct = bot.get('rsi_bollinger_profit_pct')
                                 rsi_bollinger_stop_pct = bot.get('rsi_bollinger_stop_pct')
+                                rsi_bollinger_stop_enabled = bot.get('rsi_bollinger_stop_enabled')
+                                rsi_bollinger_strict_enabled = bot.get('rsi_bollinger_strict_enabled')
+                                rsi_bollinger_strict_bars = bot.get('rsi_bollinger_strict_bars')
+                                rsi_bollinger_bounce_enabled = bot.get('rsi_bollinger_bounce_enabled')
+                                rsi_bollinger_bounce_pct = bot.get('rsi_bollinger_bounce_pct')
+                                rsi_bollinger_cooldown_enabled = bot.get('rsi_bollinger_cooldown_enabled')
+                                rsi_bollinger_cooldown_minutes = bot.get('rsi_bollinger_cooldown_minutes')
+                                rsi_bollinger_time_exit_enabled = bot.get('rsi_bollinger_time_exit_enabled')
+                                rsi_bollinger_time_exit_minutes = bot.get('rsi_bollinger_time_exit_minutes')
+                                rsi_bollinger_only_profit = bot.get('rsi_bollinger_only_profit')
+                                rsi_bollinger_daily_max_loss = bot.get('rsi_bollinger_daily_max_loss')
+                                rsi_bollinger_max_losses_per_day = bot.get('rsi_bollinger_max_losses_per_day')
+                                rsi_bollinger_size_multiplier = bot.get('rsi_bollinger_size_multiplier')
+                                rsi_bollinger_trend_enabled = bot.get('rsi_bollinger_trend_enabled')
+                                rsi_bollinger_trend_ma = bot.get('rsi_bollinger_trend_ma')
+                                rsi_bollinger_liquidity_enabled = bot.get('rsi_bollinger_liquidity_enabled')
+                                rsi_bollinger_min_avg_volume = bot.get('rsi_bollinger_min_avg_volume')
+                                rsi_bollinger_trailing_stop_enabled = bot.get('rsi_bollinger_trailing_stop_enabled')
+                                rsi_bollinger_trailing_stop_pct = bot.get('rsi_bollinger_trailing_stop_pct')
+                                rsi_bollinger_rsi_slope_enabled = bot.get('rsi_bollinger_rsi_slope_enabled')
                                 # Rule 11 settings
                                 rule_11_enabled = bool(bot.get('rule_11_enabled'))
                                 rule_11_price_jump = bot.get('rule_11_price_jump')
                                 rule_11_window_seconds = bot.get('rule_11_window_seconds')
                                 rule_11_volume_threshold = bot.get('rule_11_volume_threshold')
                                 rule_11_limit_offset = bot.get('rule_11_limit_offset')
+                                rule_11_profit_pct = bot.get('rule_11_profit_pct')
+                                rule_11_stop_pct = bot.get('rule_11_stop_pct')
+                                rule_11_stop_enabled = bot.get('rule_11_stop_enabled')
+                                rule_11_only_profit = bot.get('rule_11_only_profit')
+                                rule_11_trailing_stop_enabled = bot.get('rule_11_trailing_stop_enabled')
+                                rule_11_trailing_stop_pct = bot.get('rule_11_trailing_stop_pct')
+                                rule_11_cooldown_enabled = bot.get('rule_11_cooldown_enabled')
+                                rule_11_cooldown_minutes = bot.get('rule_11_cooldown_minutes')
+                                rule_11_size_multiplier = bot.get('rule_11_size_multiplier')
+                                rule_11_daily_max_loss = bot.get('rule_11_daily_max_loss')
+                                rule_11_max_losses_per_day = bot.get('rule_11_max_losses_per_day')
+                                rule_11_trend_enabled = bot.get('rule_11_trend_enabled')
+                                rule_11_trend_ma = bot.get('rule_11_trend_ma')
+                                rule_11_liquidity_enabled = bot.get('rule_11_liquidity_enabled')
+                                rule_11_min_avg_volume = bot.get('rule_11_min_avg_volume')
+                                rule_11_min_tick_density = bot.get('rule_11_min_tick_density')
                                 default_trade = bot.get('default_trade_enabled', True)
                                 if default_trade is None:
                                     default_trade = True
@@ -206,11 +252,18 @@ async def broadcaster_loop():
                                     signal_trend = ''
                                 ibkr_last_prices[ibkr_ticker] = ibkr_price
                                 rsi_bollinger_history = get_price_history(ibkr_ticker)
-                                # price+volume history for Rule 11
+                                # price+volume history for Rule 11 and compute avg volume for liquidity checks
                                 try:
                                     rule_11_history = get_price_volume_history(ibkr_ticker, lookback_seconds=int(rule_11_window_seconds) if rule_11_window_seconds else 5)
                                 except Exception:
                                     rule_11_history = None
+                                try:
+                                    rsi_bollinger_avg_volume = None
+                                    if isinstance(rule_11_history, list) and rule_11_history:
+                                        vols = [float(x.get('volume') or 0.0) for x in rule_11_history]
+                                        rsi_bollinger_avg_volume = sum(vols) / len(vols) if vols else None
+                                except Exception:
+                                    rsi_bollinger_avg_volume = None
 
                             if signal_price is None:
                                 continue
@@ -222,7 +275,92 @@ async def broadcaster_loop():
                                 # the history list has just been compacted by the 1000-item
                                 # cap (after trimming before==after by length, breaking detection).
                                 before_total = trader.core._total_logged
-                                trader.on_signal(signal_trend, signal_price, bot_ticker, auto=True, rule_1_enabled=rule_enabled, take_profit_amount=tp_amount, rule_2_enabled=rule2_enabled, stop_loss_amount=sl_amount, rule_3_enabled=rule3_enabled, rule_3_drop_count=rule3_drop, rule_4_enabled=rule4_enabled, rule_4_start_time=rule4_start, rule_4_end_time=rule4_end, rule_4_days=rule4_days, rule_5_enabled=rule5_enabled, rule_5_down_minutes=rule5_down, rule_5_reversal_amount=rule5_reversal, rule_5_scalp_amount=rule5_scalp, rule_6_enabled=rule6_enabled, rule_6_down_minutes=rule6_down, rule_6_profit_amount=rule6_profit, rule_7_enabled=rule7_enabled, rule_7_up_minutes=rule7_up, rule_8_enabled=rule8_enabled, rule_8_buy_offset=rule8_buy, rule_8_sell_offset=rule8_sell, rule_9_enabled=rule9_enabled, rule_9_amount=rule9_amount, rule_9_flips=rule9_flips, rule_9_window_minutes=rule9_window, rsi_bollinger_enabled=rsi_bollinger_enabled, rsi_bollinger_rsi_length=rsi_bollinger_rsi_length, rsi_bollinger_rsi_threshold=rsi_bollinger_rsi_threshold, rsi_bollinger_bb_length=rsi_bollinger_bb_length, rsi_bollinger_bb_stdev=rsi_bollinger_bb_stdev, rsi_bollinger_profit_pct=rsi_bollinger_profit_pct, rsi_bollinger_stop_pct=rsi_bollinger_stop_pct, rsi_bollinger_price_history=rsi_bollinger_history, rule_11_enabled=rule_11_enabled, rule_11_price_jump=rule_11_price_jump, rule_11_window_seconds=rule_11_window_seconds, rule_11_volume_threshold=rule_11_volume_threshold, rule_11_limit_offset=rule_11_limit_offset, rule_11_price_history=rule_11_history, default_trade_enabled=default_trade, bot_id=bot_id, bot_name=bot_name)
+                                trader.on_signal(
+                                    signal_trend,
+                                    signal_price,
+                                    bot_ticker,
+                                    auto=True,
+                                    rule_1_enabled=rule_enabled,
+                                    take_profit_amount=tp_amount,
+                                    rule_2_enabled=rule2_enabled,
+                                    stop_loss_amount=sl_amount,
+                                    rule_3_enabled=rule3_enabled,
+                                    rule_3_drop_count=rule3_drop,
+                                    rule_4_enabled=rule4_enabled,
+                                    rule_4_start_time=rule4_start,
+                                    rule_4_end_time=rule4_end,
+                                    rule_4_days=rule4_days,
+                                    rule_5_enabled=rule5_enabled,
+                                    rule_5_down_minutes=rule5_down,
+                                    rule_5_reversal_amount=rule5_reversal,
+                                    rule_5_scalp_amount=rule5_scalp,
+                                    rule_6_enabled=rule6_enabled,
+                                    rule_6_down_minutes=rule6_down,
+                                    rule_6_profit_amount=rule6_profit,
+                                    rule_7_enabled=rule7_enabled,
+                                    rule_7_up_minutes=rule7_up,
+                                    rule_8_enabled=rule8_enabled,
+                                    rule_8_buy_offset=rule8_buy,
+                                    rule_8_sell_offset=rule8_sell,
+                                    rule_9_enabled=rule9_enabled,
+                                    rule_9_amount=rule9_amount,
+                                    rule_9_flips=rule9_flips,
+                                    rule_9_window_minutes=rule9_window,
+                                    rsi_bollinger_enabled=rsi_bollinger_enabled,
+                                    rsi_bollinger_rsi_length=rsi_bollinger_rsi_length,
+                                    rsi_bollinger_rsi_threshold=rsi_bollinger_rsi_threshold,
+                                    rsi_bollinger_bb_length=rsi_bollinger_bb_length,
+                                    rsi_bollinger_bb_stdev=rsi_bollinger_bb_stdev,
+                                    rsi_bollinger_profit_pct=rsi_bollinger_profit_pct,
+                                    rsi_bollinger_stop_pct=rsi_bollinger_stop_pct,
+                                    rsi_bollinger_stop_enabled=rsi_bollinger_stop_enabled,
+                                    rsi_bollinger_strict_enabled=rsi_bollinger_strict_enabled,
+                                    rsi_bollinger_strict_bars=rsi_bollinger_strict_bars,
+                                    rsi_bollinger_bounce_enabled=rsi_bollinger_bounce_enabled,
+                                    rsi_bollinger_bounce_pct=rsi_bollinger_bounce_pct,
+                                    rsi_bollinger_cooldown_enabled=rsi_bollinger_cooldown_enabled,
+                                    rsi_bollinger_cooldown_minutes=rsi_bollinger_cooldown_minutes,
+                                    rsi_bollinger_time_exit_enabled=rsi_bollinger_time_exit_enabled,
+                                    rsi_bollinger_time_exit_minutes=rsi_bollinger_time_exit_minutes,
+                                    rsi_bollinger_only_profit=rsi_bollinger_only_profit,
+                                    rsi_bollinger_price_history=rsi_bollinger_history,
+                                    rsi_bollinger_daily_max_loss=rsi_bollinger_daily_max_loss,
+                                    rsi_bollinger_max_losses_per_day=rsi_bollinger_max_losses_per_day,
+                                    rsi_bollinger_size_multiplier=rsi_bollinger_size_multiplier,
+                                    rsi_bollinger_trend_enabled=rsi_bollinger_trend_enabled,
+                                    rsi_bollinger_trend_ma=rsi_bollinger_trend_ma,
+                                    rsi_bollinger_liquidity_enabled=rsi_bollinger_liquidity_enabled,
+                                    rsi_bollinger_min_avg_volume=rsi_bollinger_min_avg_volume,
+                                    rsi_bollinger_avg_volume=rsi_bollinger_avg_volume,
+                                    rsi_bollinger_trailing_stop_enabled=rsi_bollinger_trailing_stop_enabled,
+                                    rsi_bollinger_trailing_stop_pct=rsi_bollinger_trailing_stop_pct,
+                                    rsi_bollinger_rsi_slope_enabled=rsi_bollinger_rsi_slope_enabled,
+                                    rule_11_enabled=rule_11_enabled,
+                                    rule_11_price_jump=rule_11_price_jump,
+                                    rule_11_window_seconds=rule_11_window_seconds,
+                                    rule_11_volume_threshold=rule_11_volume_threshold,
+                                    rule_11_limit_offset=rule_11_limit_offset,
+                                    rule_11_price_history=rule_11_history,
+                                    rule_11_profit_pct=rule_11_profit_pct,
+                                    rule_11_stop_pct=rule_11_stop_pct,
+                                    rule_11_stop_enabled=rule_11_stop_enabled,
+                                    rule_11_only_profit=rule_11_only_profit,
+                                    rule_11_trailing_stop_enabled=rule_11_trailing_stop_enabled,
+                                    rule_11_trailing_stop_pct=rule_11_trailing_stop_pct,
+                                    rule_11_cooldown_enabled=rule_11_cooldown_enabled,
+                                    rule_11_cooldown_minutes=rule_11_cooldown_minutes,
+                                    rule_11_size_multiplier=rule_11_size_multiplier,
+                                    rule_11_daily_max_loss=rule_11_daily_max_loss,
+                                    rule_11_max_losses_per_day=rule_11_max_losses_per_day,
+                                    rule_11_trend_enabled=rule_11_trend_enabled,
+                                    rule_11_trend_ma=rule_11_trend_ma,
+                                    rule_11_liquidity_enabled=rule_11_liquidity_enabled,
+                                    rule_11_min_avg_volume=rule_11_min_avg_volume,
+                                    rule_11_min_tick_density=rule_11_min_tick_density,
+                                    default_trade_enabled=default_trade,
+                                    bot_id=bot_id,
+                                    bot_name=bot_name,
+                                )
                                 after_total = trader.core._total_logged
                                 new_trade_count = after_total - before_total
                                 if new_trade_count > 0:

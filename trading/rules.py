@@ -350,12 +350,49 @@ def _compute_bollinger(prices: list, length: int, stdev_mult: float) -> Optional
     return mean, upper, lower
 
 
+def _parse_iso_ts(ts_val) -> Optional[datetime]:
+    if ts_val is None:
+        return None
+    if isinstance(ts_val, datetime):
+        return ts_val
+    try:
+        raw = str(ts_val)
+        if raw.endswith('Z'):
+            raw = raw[:-1]
+        return datetime.fromisoformat(raw)
+    except Exception:
+        return None
+
+
 def maybe_rsi_bollinger_trade(state: 'TickerState', current_price: float,
                               price_history: list,
                               rsi_length: Optional[int], rsi_threshold: Optional[float],
                               bb_length: Optional[int], bb_stdev: Optional[float],
                               profit_pct: Optional[float], stop_pct: Optional[float],
-                              buy_callback, sell_callback) -> bool:
+                              stop_enabled: Optional[bool] = None,
+                              strict_enabled: Optional[bool] = None,
+                              strict_bars: Optional[int] = None,
+                              bounce_enabled: Optional[bool] = None,
+                              bounce_pct: Optional[float] = None,
+                              cooldown_enabled: Optional[bool] = None,
+                              cooldown_minutes: Optional[float] = None,
+                              time_exit_enabled: Optional[bool] = None,
+                              time_exit_minutes: Optional[float] = None,
+                              only_profit: Optional[bool] = None,
+                              # New safety features
+                              daily_max_loss: Optional[float] = None,
+                              max_losses_per_day: Optional[int] = None,
+                              size_multiplier: Optional[float] = None,
+                              trend_enabled: Optional[bool] = None,
+                              trend_ma: Optional[int] = None,
+                              liquidity_enabled: Optional[bool] = None,
+                              min_avg_volume: Optional[int] = None,
+                              avg_volume: Optional[float] = None,
+                              # Trailing Stop and RSI Slope Optimizations
+                              trailing_stop_enabled: Optional[bool] = None,
+                              trailing_stop_pct: Optional[float] = None,
+                              rsi_slope_enabled: Optional[bool] = None,
+                              buy_callback=None, sell_callback=None) -> bool:
     """
     RSI + Bollinger Reversal:
     - Buy when RSI <= threshold and price touches lower BB
@@ -374,26 +411,143 @@ def maybe_rsi_bollinger_trade(state: 'TickerState', current_price: float,
     if stop < 0:
         stop = 0.0
 
+    stop_on = True if stop_enabled is None else bool(stop_enabled)
+    strict_on = bool(strict_enabled)
+    strict_n = max(int(strict_bars) if strict_bars else 2, 1)
+    bounce_on = bool(bounce_enabled)
+    bounce_p = float(bounce_pct) if bounce_pct is not None else 0.05
+    if bounce_p < 0:
+        bounce_p = 0.0
+    cooldown_on = bool(cooldown_enabled)
+    cooldown_m = float(cooldown_minutes) if cooldown_minutes is not None else 5.0
+    if cooldown_m < 0:
+        cooldown_m = 0.0
+    time_exit_on = bool(time_exit_enabled)
+    time_exit_m = float(time_exit_minutes) if time_exit_minutes is not None else 5.0
+    if time_exit_m < 0:
+        time_exit_m = 0.0
+    profit_only = bool(only_profit)
+
+    # Safety: enforce daily caps before allowing new buys
+    try:
+        if daily_max_loss is not None:
+            dm = float(daily_max_loss)
+            if dm >= 0 and getattr(state, 'daily_loss_total', 0.0) >= dm:
+                return True
+    except Exception:
+        pass
+    try:
+        if max_losses_per_day is not None:
+            ml = int(max_losses_per_day)
+            if ml >= 0 and getattr(state, 'daily_loss_count', 0) >= ml:
+                return True
+    except Exception:
+        pass
+
+    # Trend filter: require price >= moving average when enabled
+    try:
+        if trend_enabled:
+            ma_len = int(trend_ma) if trend_ma is not None else 50
+            if ma_len > 1 and isinstance(price_history, list) and len(price_history) >= ma_len:
+                ma = sum(price_history[-ma_len:]) / float(ma_len)
+                if float(current_price) < ma:
+                    return True
+    except Exception:
+        pass
+
+    # Liquidity filter: require average volume >= threshold when enabled
+    try:
+        if liquidity_enabled and min_avg_volume is not None:
+            if avg_volume is None:
+                # no volume info available — block by default to be safe
+                return True
+            try:
+                if float(avg_volume) < float(min_avg_volume):
+                    return True
+            except Exception:
+                return True
+    except Exception:
+        pass
+
     entry = state.position.get('entry') if state.position else None
     if entry is not None:
+        now = datetime.utcnow()
+
+        # Trailing stop loss logic
+        trailing_stop_on = bool(trailing_stop_enabled)
+        if trailing_stop_on:
+            if state.rsi_bollinger_peak_price is None or current_price > state.rsi_bollinger_peak_price:
+                state.rsi_bollinger_peak_price = current_price
+            
+            ts_pct = float(trailing_stop_pct) if trailing_stop_pct is not None else 0.1
+            if ts_pct > 0:
+                ts_stop_price = state.rsi_bollinger_peak_price * (1.0 - (ts_pct / 100.0))
+                if current_price <= ts_stop_price:
+                    if current_price < float(entry):
+                        state.rsi_bollinger_last_loss_time = now
+                    sell_callback(current_price, win_reason="RSI_BB_TRAILING_STOP")
+                    state.rsi_bollinger_waiting_bounce = False
+                    state.rsi_bollinger_trigger_price = None
+                    state.rsi_bollinger_oversold_count = 0
+                    state.rsi_bollinger_peak_price = None
+                    return True
+
         if profit > 0:
             target = float(entry) * (1.0 + (profit / 100.0))
             if current_price >= target:
                 sell_callback(current_price, win_reason="RSI_BB_PROFIT")
+                state.rsi_bollinger_waiting_bounce = False
+                state.rsi_bollinger_trigger_price = None
+                state.rsi_bollinger_oversold_count = 0
+                state.rsi_bollinger_peak_price = None
                 return True
 
-        if stop > 0:
+        if time_exit_on and time_exit_m > 0:
+            entry_ts = _parse_iso_ts(state.position.get('ts'))
+            if entry_ts is not None:
+                held_min = (now - entry_ts).total_seconds() / 60.0
+                if held_min >= time_exit_m:
+                    if (not profit_only) or current_price >= float(entry):
+                        if current_price < float(entry):
+                            state.rsi_bollinger_last_loss_time = now
+                        sell_callback(current_price, win_reason="RSI_BB_TIME")
+                        state.rsi_bollinger_waiting_bounce = False
+                        state.rsi_bollinger_trigger_price = None
+                        state.rsi_bollinger_oversold_count = 0
+                        state.rsi_bollinger_peak_price = None
+                        return True
+
+        if stop > 0 and stop_on and not profit_only:
             stop_price = float(entry) * (1.0 - (stop / 100.0))
             if current_price <= stop_price:
+                state.rsi_bollinger_last_loss_time = datetime.utcnow()
                 sell_callback(current_price, win_reason="RSI_BB_STOP")
+                state.rsi_bollinger_waiting_bounce = False
+                state.rsi_bollinger_trigger_price = None
+                state.rsi_bollinger_oversold_count = 0
+                state.rsi_bollinger_peak_price = None
                 return True
 
         return True
+
+    # Flat state: reset trailing peak
+    state.rsi_bollinger_peak_price = None
 
     history = price_history if isinstance(price_history, list) else []
     required = max(rsi_len + 1, bb_len)
     if len(history) < required:
         return True
+
+    if cooldown_on and state.rsi_bollinger_last_loss_time is not None:
+        try:
+            elapsed = (datetime.utcnow() - state.rsi_bollinger_last_loss_time).total_seconds() / 60.0
+            if elapsed < cooldown_m:
+                state.rsi_bollinger_waiting_bounce = False
+                state.rsi_bollinger_trigger_price = None
+                state.rsi_bollinger_oversold_count = 0
+                return True
+        except Exception:
+            pass
 
     rsi = _compute_rsi(history, rsi_len)
     bands = _compute_bollinger(history, bb_len, bb_sd)
@@ -401,7 +555,51 @@ def maybe_rsi_bollinger_trade(state: 'TickerState', current_price: float,
         return True
 
     _, _upper, lower = bands
-    if rsi <= rsi_th and current_price <= lower:
+    rsi_ok = rsi <= rsi_th
+    touch_lower = current_price <= lower
+
+    if strict_on:
+        if rsi_ok and touch_lower:
+            state.rsi_bollinger_oversold_count += 1
+        else:
+            state.rsi_bollinger_oversold_count = 0
+        ready = state.rsi_bollinger_oversold_count >= strict_n
+    else:
+        ready = rsi_ok and touch_lower
+        if not ready:
+            state.rsi_bollinger_oversold_count = 0
+
+    # RSI Slope reversal confirmation
+    if ready and bool(rsi_slope_enabled):
+        rsi_prev = _compute_rsi(history[:-1], rsi_len)
+        if rsi_prev is not None:
+            # RSI must be strictly ascending (reversing upwards from oversold)
+            if rsi <= rsi_prev:
+                ready = False
+
+    if bounce_on:
+        if state.rsi_bollinger_waiting_bounce:
+            trigger_price = state.rsi_bollinger_trigger_price
+            if trigger_price is None:
+                state.rsi_bollinger_waiting_bounce = False
+            else:
+                bounce_target = float(trigger_price) * (1.0 + (bounce_p / 100.0))
+                if current_price >= bounce_target:
+                    state.rsi_bollinger_waiting_bounce = False
+                    state.rsi_bollinger_trigger_price = None
+                    state.rsi_bollinger_oversold_count = 0
+                    buy_callback(current_price)
+            return True
+
+        if ready:
+            state.rsi_bollinger_waiting_bounce = True
+            state.rsi_bollinger_trigger_price = float(current_price)
+        return True
+
+    if ready:
+        state.rsi_bollinger_waiting_bounce = False
+        state.rsi_bollinger_trigger_price = None
+        state.rsi_bollinger_oversold_count = 0
         buy_callback(current_price)
     return True
 
@@ -410,14 +608,123 @@ def maybe_rule11_trade(state: 'TickerState', trend: str, current_price: float,
                        price_jump: Optional[float], window_seconds: Optional[int],
                        volume_threshold: Optional[int], limit_offset: Optional[float],
                        price_volume_history: Optional[list],
-                       buy_callback, sell_callback) -> bool:
+                       profit_pct: Optional[float] = None, stop_pct: Optional[float] = None,
+                       stop_enabled: Optional[bool] = None, only_profit: Optional[bool] = None,
+                       trailing_stop_enabled: Optional[bool] = None, trailing_stop_pct: Optional[float] = None,
+                       cooldown_enabled: Optional[bool] = None, cooldown_minutes: Optional[float] = None,
+                       size_multiplier: Optional[float] = None, daily_max_loss: Optional[float] = None,
+                       max_losses_per_day: Optional[int] = None, trend_enabled: Optional[bool] = None,
+                       trend_ma: Optional[int] = None, liquidity_enabled: Optional[bool] = None,
+                       min_avg_volume: Optional[int] = None, avg_volume: Optional[float] = None,
+                       min_tick_density: Optional[int] = None, price_history: Optional[list] = None,
+                       buy_callback=None, sell_callback=None) -> bool:
     """
-    Rule #11: Momentum tick breakout (very short window).
-    Conservative default implementation: detect an immediate price jump from the previous tick
-    greater than or equal to `price_jump` and execute a buy at `current_price + limit_offset`.
-    Volume threshold is accepted but not enforced if no volume data available.
-    Returns True when rule handled (blocks default logic).
+    Rule #11: Momentum tick breakout with advanced safety, stops, and tick density filtering.
+    Always returns True when rule handled (blocks default logic).
     """
+    # 1. Position management (Exit logic)
+    entry = state.position.get('entry') if state.position else None
+    if entry is not None:
+        now = datetime.utcnow()
+
+        # Trailing stop loss logic
+        trailing_stop_on = bool(trailing_stop_enabled)
+        if trailing_stop_on:
+            peak = getattr(state, 'rule11_peak_price', None)
+            if peak is None or current_price > peak:
+                state.rule11_peak_price = current_price
+                peak = current_price
+            
+            ts_pct = float(trailing_stop_pct) if trailing_stop_pct is not None else 0.1
+            if ts_pct > 0:
+                ts_stop_price = peak * (1.0 - (ts_pct / 100.0))
+                if current_price <= ts_stop_price:
+                    if current_price < float(entry):
+                        state.rule11_last_loss_time = now
+                    sell_callback(current_price, win_reason="RULE_11_TRAILING_STOP")
+                    state.rule11_peak_price = None
+                    return True
+
+        # Profit target
+        try:
+            profit = float(profit_pct) if profit_pct is not None else 0.2
+            if profit > 0:
+                target = float(entry) * (1.0 + (profit / 100.0))
+                if current_price >= target:
+                    sell_callback(current_price, win_reason="RULE_11_PROFIT")
+                    state.rule11_peak_price = None
+                    return True
+        except Exception:
+            pass
+
+        # Stop loss
+        try:
+            stop_on = True if stop_enabled is None else bool(stop_enabled)
+            profit_only = bool(only_profit)
+            stop = float(stop_pct) if stop_pct is not None else 0.4
+            if stop > 0 and stop_on and not profit_only:
+                stop_price = float(entry) * (1.0 - (stop / 100.0))
+                if current_price <= stop_price:
+                    state.rule11_last_loss_time = now
+                    sell_callback(current_price, win_reason="RULE_11_STOP")
+                    state.rule11_peak_price = None
+                    return True
+        except Exception:
+            pass
+
+        return True
+
+    # Flat state: reset trailing peak
+    state.rule11_peak_price = None
+
+    # 2. Safety overrides (Daily max loss cap, max losses per day)
+    try:
+        if daily_max_loss is not None:
+            dm = float(daily_max_loss)
+            if dm >= 0 and getattr(state, 'daily_loss_total', 0.0) >= dm:
+                return True
+    except Exception:
+        pass
+    try:
+        if max_losses_per_day is not None:
+            ml = int(max_losses_per_day)
+            if ml >= 0 and getattr(state, 'daily_loss_count', 0) >= ml:
+                return True
+    except Exception:
+        pass
+
+    # 3. Cooldown after a loss check
+    if bool(cooldown_enabled) and getattr(state, 'rule11_last_loss_time', None) is not None:
+        try:
+            cooldown_m = float(cooldown_minutes) if cooldown_minutes is not None else 5.0
+            elapsed = (datetime.utcnow() - state.rule11_last_loss_time).total_seconds() / 60.0
+            if elapsed < cooldown_m:
+                return True
+        except Exception:
+            pass
+
+    # 4. Trend filter (Price >= SMA(N))
+    try:
+        if trend_enabled:
+            ma_len = int(trend_ma) if trend_ma is not None else 50
+            if ma_len > 1 and isinstance(price_history, list) and len(price_history) >= ma_len:
+                ma = sum(price_history[-ma_len:]) / float(ma_len)
+                if float(current_price) < ma:
+                    return True
+    except Exception:
+        pass
+
+    # 5. Liquidity filter (Average Volume >= Threshold)
+    try:
+        if liquidity_enabled and min_avg_volume is not None:
+            if avg_volume is None:
+                return True
+            if float(avg_volume) < float(min_avg_volume):
+                return True
+    except Exception:
+        pass
+
+    # 6. Parse and evaluate price and volume jump
     try:
         pj = float(price_jump) if price_jump is not None else 0.0
     except (ValueError, TypeError):
@@ -426,16 +733,13 @@ def maybe_rule11_trade(state: 'TickerState', trend: str, current_price: float,
     if pj <= 0:
         return False
 
-    # Prefer using the provided price+volume history (list of {ts, price, volume}).
     pv = None
     try:
         if isinstance(price_volume_history, list) and price_volume_history:
             pv = price_volume_history
         else:
-            # fallback: try to read state.price_history if available (older format)
             hist = getattr(state, 'price_history', None)
             if isinstance(hist, list) and len(hist) >= 2:
-                # synthesize volume=0.0 entries for compatibility
                 now = getattr(state, 'last_ts', time.time()) if hasattr(state, 'last_ts') else time.time()
                 pv = []
                 ts_base = now - len(hist)
@@ -456,7 +760,6 @@ def maybe_rule11_trade(state: 'TickerState', trend: str, current_price: float,
     if not prices:
         return False
 
-    # Compute baseline price (minimum in the window) and aggregate volume
     try:
         baseline = min(prices)
         price_jump_actual = float(current_price) - float(baseline)
@@ -464,11 +767,24 @@ def maybe_rule11_trade(state: 'TickerState', trend: str, current_price: float,
         return False
 
     total_vol = sum(volumes) if volumes else 0.0
-
-    # Volume check (if provided) and price jump check
     vol_ok = True if (volume_threshold is None or volume_threshold <= 0) else (total_vol >= float(volume_threshold))
     jump_ok = price_jump_actual >= float(pj)
 
+    # 7. Tick Density Filter (The Crowd Check)
+    try:
+        min_density = int(min_tick_density) if min_tick_density is not None else 3
+    except Exception:
+        min_density = 3
+
+    if min_density > 1 and len(prices) >= 2:
+        up_ticks = 0
+        for i in range(1, len(prices)):
+            if prices[i] > prices[i-1]:
+                up_ticks += 1
+        if up_ticks < min_density:
+            return True
+
+    # 8. Entry execution
     if jump_ok and vol_ok:
         lo = float(limit_offset) if limit_offset is not None else 0.01
         buy_price = float(current_price) + (lo if lo >= 0 else 0.0)

@@ -163,7 +163,7 @@ def upsert_bot_from_last_result(hwnd: int, last: dict):
                 )
             else:
                 cur.execute(
-                    "INSERT INTO bots (hwnd, name, ticker, total_pnl, open_direction, open_price, open_time, rule_1_enabled, rule_2_enabled, rule_3_enabled, rule_4_enabled, rule_5_enabled, rule_6_enabled, rule_7_enabled, rule_8_enabled, rule_9_enabled, take_profit_amount, stop_loss_amount, rule_3_drop_count, rule_5_down_minutes, rule_5_reversal_amount, rule_5_scalp_amount, rule_6_down_minutes, rule_6_profit_amount, rule_7_up_minutes, rule_8_buy_offset, rule_8_sell_offset, rule_9_amount, rule_9_flips, rule_9_window_minutes, rsi_bollinger_enabled, rsi_bollinger_rsi_length, rsi_bollinger_rsi_threshold, rsi_bollinger_bb_length, rsi_bollinger_bb_stdev, rsi_bollinger_profit_pct, rsi_bollinger_stop_pct, meta) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    "INSERT INTO bots (hwnd, name, ticker, total_pnl, open_direction, open_price, open_time, rule_1_enabled, rule_2_enabled, rule_3_enabled, rule_4_enabled, rule_5_enabled, rule_6_enabled, rule_7_enabled, rule_8_enabled, rule_9_enabled, take_profit_amount, stop_loss_amount, rule_3_drop_count, rule_5_down_minutes, rule_5_reversal_amount, rule_5_scalp_amount, rule_6_down_minutes, rule_6_profit_amount, rule_7_up_minutes, rule_8_buy_offset, rule_8_sell_offset, rule_9_amount, rule_9_flips, rule_9_window_minutes, rsi_bollinger_enabled, rsi_bollinger_rsi_length, rsi_bollinger_rsi_threshold, rsi_bollinger_bb_length, rsi_bollinger_bb_stdev, rsi_bollinger_profit_pct, rsi_bollinger_stop_pct, rsi_bollinger_stop_enabled, rsi_bollinger_strict_enabled, rsi_bollinger_strict_bars, rsi_bollinger_bounce_enabled, rsi_bollinger_bounce_pct, rsi_bollinger_cooldown_enabled, rsi_bollinger_cooldown_minutes, rsi_bollinger_time_exit_enabled, rsi_bollinger_time_exit_minutes, rsi_bollinger_only_profit, rsi_bollinger_daily_max_loss, rsi_bollinger_max_losses_per_day, rsi_bollinger_size_multiplier, rsi_bollinger_trend_enabled, rsi_bollinger_trend_ma, rsi_bollinger_liquidity_enabled, rsi_bollinger_min_avg_volume, meta) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     (
                         hwnd,
                         name,
@@ -202,6 +202,24 @@ def upsert_bot_from_last_result(hwnd: int, last: dict):
                         2.0,
                         0.2,
                         0.4,
+                        1,
+                        0,
+                        2,
+                        0,
+                        0.05,
+                        0,
+                        5.0,
+                        0,
+                        5.0,
+                        0,
+                        0,
+                        None,
+                        0,
+                        None,
+                        0,
+                        50,
+                        0,
+                        0,
                         json.dumps(meta) if isinstance(meta, dict) else json.dumps({}),
                     ),
                 )
@@ -253,6 +271,22 @@ def upsert_bot_settings(hwnd: int, settings: dict):
     rule_11_window_seconds = settings.get('rule_11_window_seconds')
     rule_11_volume_threshold = settings.get('rule_11_volume_threshold')
     rule_11_limit_offset = settings.get('rule_11_limit_offset')
+    rule_11_profit_pct = settings.get('rule_11_profit_pct')
+    rule_11_stop_pct = settings.get('rule_11_stop_pct')
+    rule_11_stop_enabled = settings.get('rule_11_stop_enabled')
+    rule_11_only_profit = settings.get('rule_11_only_profit')
+    rule_11_trailing_stop_enabled = settings.get('rule_11_trailing_stop_enabled')
+    rule_11_trailing_stop_pct = settings.get('rule_11_trailing_stop_pct')
+    rule_11_cooldown_enabled = settings.get('rule_11_cooldown_enabled')
+    rule_11_cooldown_minutes = settings.get('rule_11_cooldown_minutes')
+    rule_11_size_multiplier = settings.get('rule_11_size_multiplier')
+    rule_11_daily_max_loss = settings.get('rule_11_daily_max_loss')
+    rule_11_max_losses_per_day = settings.get('rule_11_max_losses_per_day')
+    rule_11_trend_enabled = settings.get('rule_11_trend_enabled')
+    rule_11_trend_ma = settings.get('rule_11_trend_ma')
+    rule_11_liquidity_enabled = settings.get('rule_11_liquidity_enabled')
+    rule_11_min_avg_volume = settings.get('rule_11_min_avg_volume')
+    rule_11_min_tick_density = settings.get('rule_11_min_tick_density')
     rsi_bollinger_enabled = settings.get('rsi_bollinger_enabled')
     rsi_bollinger_rsi_length = settings.get('rsi_bollinger_rsi_length')
     rsi_bollinger_rsi_threshold = settings.get('rsi_bollinger_rsi_threshold')
@@ -260,6 +294,19 @@ def upsert_bot_settings(hwnd: int, settings: dict):
     rsi_bollinger_bb_stdev = settings.get('rsi_bollinger_bb_stdev')
     rsi_bollinger_profit_pct = settings.get('rsi_bollinger_profit_pct')
     rsi_bollinger_stop_pct = settings.get('rsi_bollinger_stop_pct')
+    rsi_bollinger_stop_enabled = settings.get('rsi_bollinger_stop_enabled')
+    rsi_bollinger_strict_enabled = settings.get('rsi_bollinger_strict_enabled')
+    rsi_bollinger_strict_bars = settings.get('rsi_bollinger_strict_bars')
+    rsi_bollinger_bounce_enabled = settings.get('rsi_bollinger_bounce_enabled')
+    rsi_bollinger_bounce_pct = settings.get('rsi_bollinger_bounce_pct')
+    rsi_bollinger_cooldown_enabled = settings.get('rsi_bollinger_cooldown_enabled')
+    rsi_bollinger_cooldown_minutes = settings.get('rsi_bollinger_cooldown_minutes')
+    rsi_bollinger_time_exit_enabled = settings.get('rsi_bollinger_time_exit_enabled')
+    rsi_bollinger_time_exit_minutes = settings.get('rsi_bollinger_time_exit_minutes')
+    rsi_bollinger_only_profit = settings.get('rsi_bollinger_only_profit')
+    rsi_bollinger_trailing_stop_enabled = settings.get('rsi_bollinger_trailing_stop_enabled')
+    rsi_bollinger_trailing_stop_pct = settings.get('rsi_bollinger_trailing_stop_pct')
+    rsi_bollinger_rsi_slope_enabled = settings.get('rsi_bollinger_rsi_slope_enabled')
 
     # IBKR order settings
     live_trading_enabled = settings.get('live_trading_enabled')
@@ -394,6 +441,87 @@ def upsert_bot_settings(hwnd: int, settings: dict):
             rsi_bollinger_stop_pct = float(rsi_bollinger_stop_pct)
         except Exception:
             rsi_bollinger_stop_pct = None
+    if rsi_bollinger_stop_enabled is not None:
+        rsi_bollinger_stop_enabled = 1 if bool(rsi_bollinger_stop_enabled) else 0
+    if rsi_bollinger_strict_enabled is not None:
+        rsi_bollinger_strict_enabled = 1 if bool(rsi_bollinger_strict_enabled) else 0
+    if rsi_bollinger_strict_bars is not None:
+        try:
+            rsi_bollinger_strict_bars = int(rsi_bollinger_strict_bars)
+        except Exception:
+            rsi_bollinger_strict_bars = None
+    if rsi_bollinger_bounce_enabled is not None:
+        rsi_bollinger_bounce_enabled = 1 if bool(rsi_bollinger_bounce_enabled) else 0
+    if rsi_bollinger_bounce_pct is not None:
+        try:
+            rsi_bollinger_bounce_pct = float(rsi_bollinger_bounce_pct)
+        except Exception:
+            rsi_bollinger_bounce_pct = None
+    if rsi_bollinger_cooldown_enabled is not None:
+        rsi_bollinger_cooldown_enabled = 1 if bool(rsi_bollinger_cooldown_enabled) else 0
+    if rsi_bollinger_cooldown_minutes is not None:
+        try:
+            rsi_bollinger_cooldown_minutes = float(rsi_bollinger_cooldown_minutes)
+        except Exception:
+            rsi_bollinger_cooldown_minutes = None
+    if rsi_bollinger_time_exit_enabled is not None:
+        rsi_bollinger_time_exit_enabled = 1 if bool(rsi_bollinger_time_exit_enabled) else 0
+    if rsi_bollinger_time_exit_minutes is not None:
+        try:
+            rsi_bollinger_time_exit_minutes = float(rsi_bollinger_time_exit_minutes)
+        except Exception:
+            rsi_bollinger_time_exit_minutes = None
+    if rsi_bollinger_only_profit is not None:
+        rsi_bollinger_only_profit = 1 if bool(rsi_bollinger_only_profit) else 0
+    if rsi_bollinger_trailing_stop_enabled is not None:
+        rsi_bollinger_trailing_stop_enabled = 1 if bool(rsi_bollinger_trailing_stop_enabled) else 0
+    if rsi_bollinger_trailing_stop_pct is not None:
+        try:
+            rsi_bollinger_trailing_stop_pct = float(rsi_bollinger_trailing_stop_pct)
+        except Exception:
+            rsi_bollinger_trailing_stop_pct = None
+    if rsi_bollinger_rsi_slope_enabled is not None:
+        rsi_bollinger_rsi_slope_enabled = 1 if bool(rsi_bollinger_rsi_slope_enabled) else 0
+
+    # New Rule10 safety settings
+    rsi_bollinger_daily_max_loss = settings.get('rsi_bollinger_daily_max_loss')
+    rsi_bollinger_max_losses_per_day = settings.get('rsi_bollinger_max_losses_per_day')
+    rsi_bollinger_size_multiplier = settings.get('rsi_bollinger_size_multiplier')
+    rsi_bollinger_trend_enabled = settings.get('rsi_bollinger_trend_enabled')
+    rsi_bollinger_trend_ma = settings.get('rsi_bollinger_trend_ma')
+    rsi_bollinger_liquidity_enabled = settings.get('rsi_bollinger_liquidity_enabled')
+    rsi_bollinger_min_avg_volume = settings.get('rsi_bollinger_min_avg_volume')
+
+    # Normalize new Rule10 safety fields
+    if rsi_bollinger_daily_max_loss is not None:
+        try:
+            rsi_bollinger_daily_max_loss = float(rsi_bollinger_daily_max_loss)
+        except Exception:
+            rsi_bollinger_daily_max_loss = None
+    if rsi_bollinger_max_losses_per_day is not None:
+        try:
+            rsi_bollinger_max_losses_per_day = int(rsi_bollinger_max_losses_per_day)
+        except Exception:
+            rsi_bollinger_max_losses_per_day = None
+    if rsi_bollinger_size_multiplier is not None:
+        try:
+            rsi_bollinger_size_multiplier = float(rsi_bollinger_size_multiplier)
+        except Exception:
+            rsi_bollinger_size_multiplier = None
+    if rsi_bollinger_trend_enabled is not None:
+        rsi_bollinger_trend_enabled = 1 if bool(rsi_bollinger_trend_enabled) else 0
+    if rsi_bollinger_trend_ma is not None:
+        try:
+            rsi_bollinger_trend_ma = int(rsi_bollinger_trend_ma)
+        except Exception:
+            rsi_bollinger_trend_ma = None
+    if rsi_bollinger_liquidity_enabled is not None:
+        rsi_bollinger_liquidity_enabled = 1 if bool(rsi_bollinger_liquidity_enabled) else 0
+    if rsi_bollinger_min_avg_volume is not None:
+        try:
+            rsi_bollinger_min_avg_volume = int(rsi_bollinger_min_avg_volume)
+        except Exception:
+            rsi_bollinger_min_avg_volume = None
 
     # Normalize Rule 11
     if rule_11_enabled is not None:
@@ -418,6 +546,68 @@ def upsert_bot_settings(hwnd: int, settings: dict):
             rule_11_limit_offset = float(rule_11_limit_offset)
         except Exception:
             rule_11_limit_offset = None
+    if rule_11_profit_pct is not None:
+        try:
+            rule_11_profit_pct = float(rule_11_profit_pct)
+        except Exception:
+            rule_11_profit_pct = None
+    if rule_11_stop_pct is not None:
+        try:
+            rule_11_stop_pct = float(rule_11_stop_pct)
+        except Exception:
+            rule_11_stop_pct = None
+    if rule_11_stop_enabled is not None:
+        rule_11_stop_enabled = 1 if bool(rule_11_stop_enabled) else 0
+    if rule_11_only_profit is not None:
+        rule_11_only_profit = 1 if bool(rule_11_only_profit) else 0
+    if rule_11_trailing_stop_enabled is not None:
+        rule_11_trailing_stop_enabled = 1 if bool(rule_11_trailing_stop_enabled) else 0
+    if rule_11_trailing_stop_pct is not None:
+        try:
+            rule_11_trailing_stop_pct = float(rule_11_trailing_stop_pct)
+        except Exception:
+            rule_11_trailing_stop_pct = None
+    if rule_11_cooldown_enabled is not None:
+        rule_11_cooldown_enabled = 1 if bool(rule_11_cooldown_enabled) else 0
+    if rule_11_cooldown_minutes is not None:
+        try:
+            rule_11_cooldown_minutes = float(rule_11_cooldown_minutes)
+        except Exception:
+            rule_11_cooldown_minutes = None
+    if rule_11_size_multiplier is not None:
+        try:
+            rule_11_size_multiplier = float(rule_11_size_multiplier)
+        except Exception:
+            rule_11_size_multiplier = None
+    if rule_11_daily_max_loss is not None:
+        try:
+            rule_11_daily_max_loss = float(rule_11_daily_max_loss)
+        except Exception:
+            rule_11_daily_max_loss = None
+    if rule_11_max_losses_per_day is not None:
+        try:
+            rule_11_max_losses_per_day = int(rule_11_max_losses_per_day)
+        except Exception:
+            rule_11_max_losses_per_day = None
+    if rule_11_trend_enabled is not None:
+        rule_11_trend_enabled = 1 if bool(rule_11_trend_enabled) else 0
+    if rule_11_trend_ma is not None:
+        try:
+            rule_11_trend_ma = int(rule_11_trend_ma)
+        except Exception:
+            rule_11_trend_ma = None
+    if rule_11_liquidity_enabled is not None:
+        rule_11_liquidity_enabled = 1 if bool(rule_11_liquidity_enabled) else 0
+    if rule_11_min_avg_volume is not None:
+        try:
+            rule_11_min_avg_volume = int(rule_11_min_avg_volume)
+        except Exception:
+            rule_11_min_avg_volume = None
+    if rule_11_min_tick_density is not None:
+        try:
+            rule_11_min_tick_density = int(rule_11_min_tick_density)
+        except Exception:
+            rule_11_min_tick_density = None
 
     # Normalize IBKR order settings
     if live_trading_enabled is not None:
@@ -527,11 +717,47 @@ def upsert_bot_settings(hwnd: int, settings: dict):
                     rsi_bollinger_bb_stdev = COALESCE(?, rsi_bollinger_bb_stdev),
                     rsi_bollinger_profit_pct = COALESCE(?, rsi_bollinger_profit_pct),
                     rsi_bollinger_stop_pct = COALESCE(?, rsi_bollinger_stop_pct),
+                    rsi_bollinger_stop_enabled = COALESCE(?, rsi_bollinger_stop_enabled),
+                    rsi_bollinger_strict_enabled = COALESCE(?, rsi_bollinger_strict_enabled),
+                    rsi_bollinger_strict_bars = COALESCE(?, rsi_bollinger_strict_bars),
+                    rsi_bollinger_bounce_enabled = COALESCE(?, rsi_bollinger_bounce_enabled),
+                    rsi_bollinger_bounce_pct = COALESCE(?, rsi_bollinger_bounce_pct),
+                    rsi_bollinger_cooldown_enabled = COALESCE(?, rsi_bollinger_cooldown_enabled),
+                    rsi_bollinger_cooldown_minutes = COALESCE(?, rsi_bollinger_cooldown_minutes),
+                    rsi_bollinger_time_exit_enabled = COALESCE(?, rsi_bollinger_time_exit_enabled),
+                    rsi_bollinger_time_exit_minutes = COALESCE(?, rsi_bollinger_time_exit_minutes),
+                    rsi_bollinger_only_profit = COALESCE(?, rsi_bollinger_only_profit),
+                    rsi_bollinger_daily_max_loss = COALESCE(?, rsi_bollinger_daily_max_loss),
+                    rsi_bollinger_max_losses_per_day = COALESCE(?, rsi_bollinger_max_losses_per_day),
+                    rsi_bollinger_size_multiplier = COALESCE(?, rsi_bollinger_size_multiplier),
+                    rsi_bollinger_trend_enabled = COALESCE(?, rsi_bollinger_trend_enabled),
+                    rsi_bollinger_trend_ma = COALESCE(?, rsi_bollinger_trend_ma),
+                    rsi_bollinger_liquidity_enabled = COALESCE(?, rsi_bollinger_liquidity_enabled),
+                    rsi_bollinger_min_avg_volume = COALESCE(?, rsi_bollinger_min_avg_volume),
+                    rsi_bollinger_trailing_stop_enabled = COALESCE(?, rsi_bollinger_trailing_stop_enabled),
+                    rsi_bollinger_trailing_stop_pct = COALESCE(?, rsi_bollinger_trailing_stop_pct),
+                    rsi_bollinger_rsi_slope_enabled = COALESCE(?, rsi_bollinger_rsi_slope_enabled),
                     rule_11_enabled = COALESCE(?, rule_11_enabled),
                     rule_11_price_jump = COALESCE(?, rule_11_price_jump),
                     rule_11_window_seconds = COALESCE(?, rule_11_window_seconds),
                     rule_11_volume_threshold = COALESCE(?, rule_11_volume_threshold),
                     rule_11_limit_offset = COALESCE(?, rule_11_limit_offset),
+                    rule_11_profit_pct = COALESCE(?, rule_11_profit_pct),
+                    rule_11_stop_pct = COALESCE(?, rule_11_stop_pct),
+                    rule_11_stop_enabled = COALESCE(?, rule_11_stop_enabled),
+                    rule_11_only_profit = COALESCE(?, rule_11_only_profit),
+                    rule_11_trailing_stop_enabled = COALESCE(?, rule_11_trailing_stop_enabled),
+                    rule_11_trailing_stop_pct = COALESCE(?, rule_11_trailing_stop_pct),
+                    rule_11_cooldown_enabled = COALESCE(?, rule_11_cooldown_enabled),
+                    rule_11_cooldown_minutes = COALESCE(?, rule_11_cooldown_minutes),
+                    rule_11_size_multiplier = COALESCE(?, rule_11_size_multiplier),
+                    rule_11_daily_max_loss = COALESCE(?, rule_11_daily_max_loss),
+                    rule_11_max_losses_per_day = COALESCE(?, rule_11_max_losses_per_day),
+                    rule_11_trend_enabled = COALESCE(?, rule_11_trend_enabled),
+                    rule_11_trend_ma = COALESCE(?, rule_11_trend_ma),
+                    rule_11_liquidity_enabled = COALESCE(?, rule_11_liquidity_enabled),
+                    rule_11_min_avg_volume = COALESCE(?, rule_11_min_avg_volume),
+                    rule_11_min_tick_density = COALESCE(?, rule_11_min_tick_density),
                     live_trading_enabled = COALESCE(?, live_trading_enabled),
                     order_size_type = COALESCE(?, order_size_type),
                     order_size_value = COALESCE(?, order_size_value),
@@ -578,11 +804,47 @@ def upsert_bot_settings(hwnd: int, settings: dict):
                     rsi_bollinger_bb_stdev,
                     rsi_bollinger_profit_pct,
                     rsi_bollinger_stop_pct,
+                    rsi_bollinger_stop_enabled,
+                    rsi_bollinger_strict_enabled,
+                    rsi_bollinger_strict_bars,
+                    rsi_bollinger_bounce_enabled,
+                    rsi_bollinger_bounce_pct,
+                    rsi_bollinger_cooldown_enabled,
+                    rsi_bollinger_cooldown_minutes,
+                    rsi_bollinger_time_exit_enabled,
+                    rsi_bollinger_time_exit_minutes,
+                    rsi_bollinger_only_profit,
+                    rsi_bollinger_daily_max_loss,
+                    rsi_bollinger_max_losses_per_day,
+                    rsi_bollinger_size_multiplier,
+                    rsi_bollinger_trend_enabled,
+                    rsi_bollinger_trend_ma,
+                    rsi_bollinger_liquidity_enabled,
+                    rsi_bollinger_min_avg_volume,
+                    rsi_bollinger_trailing_stop_enabled,
+                    rsi_bollinger_trailing_stop_pct,
+                    rsi_bollinger_rsi_slope_enabled,
                     rule_11_enabled,
                     rule_11_price_jump,
                     rule_11_window_seconds,
                     rule_11_volume_threshold,
                     rule_11_limit_offset,
+                    rule_11_profit_pct,
+                    rule_11_stop_pct,
+                    rule_11_stop_enabled,
+                    rule_11_only_profit,
+                    rule_11_trailing_stop_enabled,
+                    rule_11_trailing_stop_pct,
+                    rule_11_cooldown_enabled,
+                    rule_11_cooldown_minutes,
+                    rule_11_size_multiplier,
+                    rule_11_daily_max_loss,
+                    rule_11_max_losses_per_day,
+                    rule_11_trend_enabled,
+                    rule_11_trend_ma,
+                    rule_11_liquidity_enabled,
+                    rule_11_min_avg_volume,
+                    rule_11_min_tick_density,
                     live_trading_enabled,
                     order_size_type,
                     order_size_value,
@@ -600,8 +862,8 @@ def upsert_bot_settings(hwnd: int, settings: dict):
         else:
             cur.execute(
                 """
-                INSERT INTO bots (hwnd, name, ticker, total_pnl, open_direction, open_price, open_time, rule_1_enabled, rule_2_enabled, rule_3_enabled, rule_4_enabled, rule_5_enabled, rule_6_enabled, rule_7_enabled, rule_8_enabled, rule_9_enabled, take_profit_amount, stop_loss_amount, rule_3_drop_count, rule_5_down_minutes, rule_5_reversal_amount, rule_5_scalp_amount, rule_6_down_minutes, rule_6_profit_amount, rule_7_up_minutes, rule_8_buy_offset, rule_8_sell_offset, rule_9_amount, rule_9_flips, rule_9_window_minutes, rsi_bollinger_enabled, rsi_bollinger_rsi_length, rsi_bollinger_rsi_threshold, rsi_bollinger_bb_length, rsi_bollinger_bb_stdev, rsi_bollinger_profit_pct, rsi_bollinger_stop_pct, rule_11_enabled, rule_11_price_jump, rule_11_window_seconds, rule_11_volume_threshold, rule_11_limit_offset, live_trading_enabled, order_size_type, order_size_value, buy_order_type, sell_order_type, retry_delay_secs, max_retries, min_trade_dollars, validate_conditions_on_retry, default_trade_enabled, meta)
-                VALUES (?, ?, ?, NULL, NULL, NULL, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO bots (hwnd, name, ticker, total_pnl, open_direction, open_price, open_time, rule_1_enabled, rule_2_enabled, rule_3_enabled, rule_4_enabled, rule_5_enabled, rule_6_enabled, rule_7_enabled, rule_8_enabled, rule_9_enabled, take_profit_amount, stop_loss_amount, rule_3_drop_count, rule_5_down_minutes, rule_5_reversal_amount, rule_5_scalp_amount, rule_6_down_minutes, rule_6_profit_amount, rule_7_up_minutes, rule_8_buy_offset, rule_8_sell_offset, rule_9_amount, rule_9_flips, rule_9_window_minutes, rsi_bollinger_enabled, rsi_bollinger_rsi_length, rsi_bollinger_rsi_threshold, rsi_bollinger_bb_length, rsi_bollinger_bb_stdev, rsi_bollinger_profit_pct, rsi_bollinger_stop_pct, rsi_bollinger_stop_enabled, rsi_bollinger_strict_enabled, rsi_bollinger_strict_bars, rsi_bollinger_bounce_enabled, rsi_bollinger_bounce_pct, rsi_bollinger_cooldown_enabled, rsi_bollinger_cooldown_minutes, rsi_bollinger_time_exit_enabled, rsi_bollinger_time_exit_minutes, rsi_bollinger_only_profit, rsi_bollinger_daily_max_loss, rsi_bollinger_max_losses_per_day, rsi_bollinger_size_multiplier, rsi_bollinger_trend_enabled, rsi_bollinger_trend_ma, rsi_bollinger_liquidity_enabled, rsi_bollinger_min_avg_volume, rsi_bollinger_trailing_stop_enabled, rsi_bollinger_trailing_stop_pct, rsi_bollinger_rsi_slope_enabled, rule_11_enabled, rule_11_price_jump, rule_11_window_seconds, rule_11_volume_threshold, rule_11_limit_offset, rule_11_profit_pct, rule_11_stop_pct, rule_11_stop_enabled, rule_11_only_profit, rule_11_trailing_stop_enabled, rule_11_trailing_stop_pct, rule_11_cooldown_enabled, rule_11_cooldown_minutes, rule_11_size_multiplier, rule_11_daily_max_loss, rule_11_max_losses_per_day, rule_11_trend_enabled, rule_11_trend_ma, rule_11_liquidity_enabled, rule_11_min_avg_volume, rule_11_min_tick_density, live_trading_enabled, order_size_type, order_size_value, buy_order_type, sell_order_type, retry_delay_secs, max_retries, min_trade_dollars, validate_conditions_on_retry, default_trade_enabled, meta)
+                VALUES (?, ?, ?, NULL, NULL, NULL, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     hwnd,
@@ -637,6 +899,47 @@ def upsert_bot_settings(hwnd: int, settings: dict):
                     rsi_bollinger_bb_stdev if rsi_bollinger_bb_stdev is not None else 2.0,
                     rsi_bollinger_profit_pct if rsi_bollinger_profit_pct is not None else 0.2,
                     rsi_bollinger_stop_pct if rsi_bollinger_stop_pct is not None else 0.4,
+                    rsi_bollinger_stop_enabled if rsi_bollinger_stop_enabled is not None else 1,
+                    rsi_bollinger_strict_enabled if rsi_bollinger_strict_enabled is not None else 0,
+                    rsi_bollinger_strict_bars if rsi_bollinger_strict_bars is not None else 2,
+                    rsi_bollinger_bounce_enabled if rsi_bollinger_bounce_enabled is not None else 0,
+                    rsi_bollinger_bounce_pct if rsi_bollinger_bounce_pct is not None else 0.05,
+                    rsi_bollinger_cooldown_enabled if rsi_bollinger_cooldown_enabled is not None else 0,
+                    rsi_bollinger_cooldown_minutes if rsi_bollinger_cooldown_minutes is not None else 5.0,
+                    rsi_bollinger_time_exit_enabled if rsi_bollinger_time_exit_enabled is not None else 0,
+                    rsi_bollinger_time_exit_minutes if rsi_bollinger_time_exit_minutes is not None else 5.0,
+                    rsi_bollinger_only_profit if rsi_bollinger_only_profit is not None else 0,
+                    rsi_bollinger_daily_max_loss if rsi_bollinger_daily_max_loss is not None else 0.0,
+                    rsi_bollinger_max_losses_per_day if rsi_bollinger_max_losses_per_day is not None else 0,
+                    rsi_bollinger_size_multiplier if rsi_bollinger_size_multiplier is not None else 1.0,
+                    rsi_bollinger_trend_enabled if rsi_bollinger_trend_enabled is not None else 0,
+                    rsi_bollinger_trend_ma if rsi_bollinger_trend_ma is not None else 50,
+                    rsi_bollinger_liquidity_enabled if rsi_bollinger_liquidity_enabled is not None else 0,
+                    rsi_bollinger_min_avg_volume if rsi_bollinger_min_avg_volume is not None else 0,
+                    rsi_bollinger_trailing_stop_enabled if rsi_bollinger_trailing_stop_enabled is not None else 0,
+                    rsi_bollinger_trailing_stop_pct if rsi_bollinger_trailing_stop_pct is not None else 0.1,
+                    rsi_bollinger_rsi_slope_enabled if rsi_bollinger_rsi_slope_enabled is not None else 0,
+                    rule_11_enabled if rule_11_enabled is not None else 0,
+                    rule_11_price_jump if rule_11_price_jump is not None else 0.03,
+                    rule_11_window_seconds if rule_11_window_seconds is not None else 5,
+                    rule_11_volume_threshold if rule_11_volume_threshold is not None else 5000,
+                    rule_11_limit_offset if rule_11_limit_offset is not None else 0.01,
+                    rule_11_profit_pct if rule_11_profit_pct is not None else 0.2,
+                    rule_11_stop_pct if rule_11_stop_pct is not None else 0.4,
+                    rule_11_stop_enabled if rule_11_stop_enabled is not None else 1,
+                    rule_11_only_profit if rule_11_only_profit is not None else 0,
+                    rule_11_trailing_stop_enabled if rule_11_trailing_stop_enabled is not None else 0,
+                    rule_11_trailing_stop_pct if rule_11_trailing_stop_pct is not None else 0.1,
+                    rule_11_cooldown_enabled if rule_11_cooldown_enabled is not None else 0,
+                    rule_11_cooldown_minutes if rule_11_cooldown_minutes is not None else 5.0,
+                    rule_11_size_multiplier if rule_11_size_multiplier is not None else 1.0,
+                    rule_11_daily_max_loss if rule_11_daily_max_loss is not None else 0.0,
+                    rule_11_max_losses_per_day if rule_11_max_losses_per_day is not None else 0,
+                    rule_11_trend_enabled if rule_11_trend_enabled is not None else 0,
+                    rule_11_trend_ma if rule_11_trend_ma is not None else 50,
+                    rule_11_liquidity_enabled if rule_11_liquidity_enabled is not None else 0,
+                    rule_11_min_avg_volume if rule_11_min_avg_volume is not None else 0,
+                    rule_11_min_tick_density if rule_11_min_tick_density is not None else 3,
                     live_trading_enabled if live_trading_enabled is not None else 0,
                     order_size_type if order_size_type is not None else 'fixed',
                     order_size_value if order_size_value is not None else 1.0,
