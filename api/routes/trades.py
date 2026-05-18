@@ -135,6 +135,10 @@ def api_manual_trade(trade: dict, _auth: bool = Depends(require_api_key)):
                             rule_11_window_seconds=bot_settings.get('rule_11_window_seconds'),
                             rule_11_volume_threshold=bot_settings.get('rule_11_volume_threshold'),
                         )
+                    except Exception:
+                        pass
+        except Exception:
+            pass
         return {"ok": True}
     except HTTPException:
         raise
