@@ -1,4 +1,4 @@
-"""Session-scoped bot management routes (in-memory only)."""
+"""Session-scoped bot management routes (in-memory with DB persistence when available)."""
 
 from fastapi import APIRouter, Depends, HTTPException
 from api.dependencies import require_api_key
@@ -10,6 +10,7 @@ from services.bot_registry import (
     get_bot,
     clear_all,
 )
+from db.queries import upsert_bot_settings
 from trading.simulator import clear_bot_state, clear_all_state
 
 router = APIRouter(prefix="", tags=["bots"])
@@ -40,13 +41,20 @@ def api_bot(bot_id: str, _auth: bool = Depends(require_api_key)):
 
 @router.post("/bots/upsert")
 def api_bot_upsert(payload: dict, _auth: bool = Depends(require_api_key)):
-    """Create/update a session bot (no DB persistence)."""
+    """Create/update a session bot (persists to DB when hwnd is provided)."""
     try:
         if not isinstance(payload, dict):
             raise HTTPException(status_code=400, detail="payload must be an object")
         bot_id = payload.get('bot_id') or payload.get('id')
         if not bot_id:
             raise HTTPException(status_code=400, detail="bot_id is required")
+
+        hwnd = payload.get('hwnd')
+        if hwnd is not None:
+            try:
+                upsert_bot_settings(hwnd, payload)
+            except Exception:
+                pass
 
         existing = get_bot(bot_id)
         if existing:

@@ -64,7 +64,7 @@ async def broadcaster_loop():
                         except Exception:
                             image_b64 = None
 
-                    # pull session bot settings for this hwnd
+                    # pull session bot settings for this hwnd (fallback to DB when empty)
                     bot_info = None
                     bot_list = []
                     try:
@@ -73,6 +73,15 @@ async def broadcaster_loop():
                     except Exception:
                         bot_info = None
                         bot_list = []
+                    if not bot_list:
+                        try:
+                            from db.queries import get_bot_db_entry
+                            bot_db_row = get_bot_db_entry(int(hwnd))
+                            if isinstance(bot_db_row, dict) and bot_db_row:
+                                bot_info = bot_db_row
+                                bot_list = [bot_db_row]
+                        except Exception:
+                            pass
 
                     # update trader auto signals if worker produced price/ticker
                     try:
@@ -226,6 +235,8 @@ async def broadcaster_loop():
                             signal_price = screenshot_price
                             signal_trend = screenshot_trend
                             rsi_bollinger_history = None
+                            rsi_bollinger_avg_volume = None
+                            rule_11_history = None
 
                             if signal_source == 'ibkr':
                                 ibkr_ticker = str(bot_ticker).strip().upper()

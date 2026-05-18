@@ -97,6 +97,24 @@ class TradeSimulator:
                   rsi_bollinger_bb_stdev: Optional[float] = None,
                   rsi_bollinger_profit_pct: Optional[float] = None,
                   rsi_bollinger_stop_pct: Optional[float] = None,
+                  rsi_bollinger_stop_enabled: Optional[bool] = None,
+                  rsi_bollinger_strict_enabled: Optional[bool] = None,
+                  rsi_bollinger_strict_bars: Optional[int] = None,
+                  rsi_bollinger_bounce_enabled: Optional[bool] = None,
+                  rsi_bollinger_bounce_pct: Optional[float] = None,
+                  rsi_bollinger_cooldown_enabled: Optional[bool] = None,
+                  rsi_bollinger_cooldown_minutes: Optional[float] = None,
+                  rsi_bollinger_time_exit_enabled: Optional[bool] = None,
+                  rsi_bollinger_time_exit_minutes: Optional[float] = None,
+                  rsi_bollinger_only_profit: Optional[bool] = None,
+                  rsi_bollinger_daily_max_loss: Optional[float] = None,
+                  rsi_bollinger_max_losses_per_day: Optional[int] = None,
+                  rsi_bollinger_size_multiplier: Optional[float] = None,
+                  rsi_bollinger_trend_enabled: Optional[bool] = None,
+                  rsi_bollinger_trend_ma: Optional[int] = None,
+                  rsi_bollinger_liquidity_enabled: Optional[bool] = None,
+                  rsi_bollinger_min_avg_volume: Optional[int] = None,
+                  rsi_bollinger_avg_volume: Optional[float] = None,
                   rsi_bollinger_price_history: Optional[list] = None,
                   rsi_bollinger_trailing_stop_enabled: bool = False,
                   rsi_bollinger_trailing_stop_pct: Optional[float] = None,
@@ -192,24 +210,24 @@ class TradeSimulator:
                         rsi_bollinger_bb_stdev,
                         rsi_bollinger_profit_pct,
                         rsi_bollinger_stop_pct,
-                        None,  # stop_enabled
-                        None,  # strict_enabled
-                        None,  # strict_bars
-                        None,  # bounce_enabled
-                        None,  # bounce_pct
-                        None,  # cooldown_enabled
-                        None,  # cooldown_minutes
-                        None,  # time_exit_enabled
-                        None,  # time_exit_minutes
-                        None,  # only_profit
-                        None,  # daily_max_loss
-                        None,  # max_losses_per_day
-                        None,  # size_multiplier
-                        None,  # trend_enabled
-                        None,  # trend_ma
-                        None,  # liquidity_enabled
-                        None,  # min_avg_volume
-                        None,  # avg_volume
+                        rsi_bollinger_stop_enabled,
+                        rsi_bollinger_strict_enabled,
+                        rsi_bollinger_strict_bars,
+                        rsi_bollinger_bounce_enabled,
+                        rsi_bollinger_bounce_pct,
+                        rsi_bollinger_cooldown_enabled,
+                        rsi_bollinger_cooldown_minutes,
+                        rsi_bollinger_time_exit_enabled,
+                        rsi_bollinger_time_exit_minutes,
+                        rsi_bollinger_only_profit,
+                        rsi_bollinger_daily_max_loss,
+                        rsi_bollinger_max_losses_per_day,
+                        rsi_bollinger_size_multiplier,
+                        rsi_bollinger_trend_enabled,
+                        rsi_bollinger_trend_ma,
+                        rsi_bollinger_liquidity_enabled,
+                        rsi_bollinger_min_avg_volume,
+                        rsi_bollinger_avg_volume,
                         rsi_bollinger_trailing_stop_enabled,
                         rsi_bollinger_trailing_stop_pct,
                         rsi_bollinger_rsi_slope_enabled,

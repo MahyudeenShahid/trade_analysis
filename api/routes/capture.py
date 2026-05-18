@@ -8,6 +8,7 @@ from api.dependencies import require_api_key
 from services.capture_manager import manager_services
 from services.background_service import selector
 from services.bot_registry import list_bots_by_hwnd, set_crop
+from db.queries import get_bot_db_entry
 
 router = APIRouter(prefix="", tags=["capture"])
 
@@ -142,7 +143,7 @@ def api_workers(_auth: bool = Depends(require_api_key)):
                         img_b64 = base64.b64encode(f.read()).decode('ascii')
                 except Exception:
                     img_b64 = None
-            # attach any session bots for this hwnd
+            # attach any session bots for this hwnd (fallback to DB when empty)
             bot_info = None
             bot_list = []
             try:
@@ -151,6 +152,14 @@ def api_workers(_auth: bool = Depends(require_api_key)):
             except Exception:
                 bot_info = None
                 bot_list = []
+            if not bot_list:
+                try:
+                    bot_db_row = get_bot_db_entry(int(w.get('hwnd')))
+                    if isinstance(bot_db_row, dict) and bot_db_row:
+                        bot_info = bot_db_row
+                        bot_list = [bot_db_row]
+                except Exception:
+                    pass
             out.append({
                 'hwnd': int(w.get('hwnd')),
                 'status': w.get('status') or {},

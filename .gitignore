@@ -16,3 +16,5 @@ trade_screenshots/
 logs/
 data.db
 trade_analysis.db
+backend_data.db-shm
+backend_data.db-wal
