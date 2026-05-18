@@ -125,6 +125,29 @@ class TradeSimulator:
                   rsi_bollinger_trailing_stop_enabled: bool = False,
                   rsi_bollinger_trailing_stop_pct: Optional[float] = None,
                   rsi_bollinger_rsi_slope_enabled: bool = False,
+                  # Rule 11: momentum tick breakout
+                  rule_11_enabled: bool = False,
+                  rule_11_price_jump: Optional[float] = None,
+                  rule_11_window_seconds: Optional[int] = None,
+                  rule_11_volume_threshold: Optional[int] = None,
+                  rule_11_limit_offset: Optional[float] = None,
+                  rule_11_price_history: Optional[list] = None,
+                  rule_11_profit_pct: Optional[float] = None,
+                  rule_11_stop_pct: Optional[float] = None,
+                  rule_11_stop_enabled: Optional[bool] = None,
+                  rule_11_only_profit: Optional[bool] = None,
+                  rule_11_trailing_stop_enabled: Optional[bool] = None,
+                  rule_11_trailing_stop_pct: Optional[float] = None,
+                  rule_11_cooldown_enabled: Optional[bool] = None,
+                  rule_11_cooldown_minutes: Optional[float] = None,
+                  rule_11_size_multiplier: Optional[float] = None,
+                  rule_11_daily_max_loss: Optional[float] = None,
+                  rule_11_max_losses_per_day: Optional[int] = None,
+                  rule_11_trend_enabled: Optional[bool] = None,
+                  rule_11_trend_ma: Optional[int] = None,
+                  rule_11_liquidity_enabled: Optional[bool] = None,
+                  rule_11_min_avg_volume: Optional[int] = None,
+                  rule_11_min_tick_density: Optional[int] = None,
                   rule_4_start_time: Optional[str] = None,
                   rule_4_end_time: Optional[str] = None,
                   rule_4_days=None,
@@ -159,6 +182,7 @@ class TradeSimulator:
         # Create callback wrappers
         sell_cb = lambda p, win_reason=None: self._sell(state_key, p, win_reason)
         buy_cb = lambda p: self._buy(state_key, p, size_multiplier=rsi_bollinger_size_multiplier)
+        buy_cb_rule11 = lambda p: self._buy(state_key, p, size_multiplier=rule_11_size_multiplier)
         
         # RULE #1: take-profit sell (works alongside default logic)
         if rule_1_enabled:
@@ -270,6 +294,44 @@ class TradeSimulator:
                                                rule_9_flips, rule_9_window_minutes, 
                                                buy_cb, sell_cb):
                         return self.summary()
+                except Exception:
+                    pass
+
+            # RULE #11: momentum tick breakout (price jump + volume)
+            if rule_11_enabled:
+                try:
+                    if hasattr(rules, 'maybe_rule11_trade'):
+                        if rules.maybe_rule11_trade(
+                            state,
+                            trend,
+                            price,
+                            rule_11_price_jump,
+                            rule_11_window_seconds,
+                            rule_11_volume_threshold,
+                            rule_11_limit_offset,
+                            rule_11_price_history,
+                            rule_11_profit_pct,
+                            rule_11_stop_pct,
+                            rule_11_stop_enabled,
+                            rule_11_only_profit,
+                            rule_11_trailing_stop_enabled,
+                            rule_11_trailing_stop_pct,
+                            rule_11_cooldown_enabled,
+                            rule_11_cooldown_minutes,
+                            rule_11_size_multiplier,
+                            rule_11_daily_max_loss,
+                            rule_11_max_losses_per_day,
+                            rule_11_trend_enabled,
+                            rule_11_trend_ma,
+                            rule_11_liquidity_enabled,
+                            rule_11_min_avg_volume,
+                            getattr(state, 'avg_volume', None),
+                            rule_11_min_tick_density,
+                            state.price_history,
+                            buy_cb_rule11,
+                            sell_cb,
+                        ):
+                            return self.summary()
                 except Exception:
                     pass
             
