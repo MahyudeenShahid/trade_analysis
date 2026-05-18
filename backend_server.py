@@ -20,6 +20,7 @@ from window_selector import WindowSelector
 # Use the available simulator implementation. Earlier code referenced
 # `trade_simulator_multi` but the repo provides `trade_simulator.py`.
 from trade_simulator import TradeSimulator
+from services.bot_registry import list_bots_by_hwnd, get_bot
 
 # Use absolute path for database to ensure consistency across runs
 DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "backend_data.db")
@@ -825,7 +826,108 @@ async def ingest(
 
     # Trigger trade automatically for this ticker
     if price and trend and ticker:
-        trader.on_signal(trend, price, ticker, auto=True)
+        # Try to get bot settings from the provided hwnd/bot_id
+        bot_settings = {}
+        try:
+            # If we have an hwnd, get bots for that hwnd
+            if hwnd:
+                bots = list_bots_by_hwnd(int(hwnd))
+                if bots:
+                    bot_settings = bots[0]
+            # Or if we have a bot_id in meta, get it directly
+            meta_dict = json.loads(meta) if isinstance(meta, str) else meta if isinstance(meta, dict) else {}
+            if not bot_settings and meta_dict.get('bot_id'):
+                bot_settings = get_bot(meta_dict.get('bot_id')) or {}
+        except Exception:
+            pass
+        
+        # Call on_signal with all bot settings as kwargs
+        try:
+            trader.on_signal(
+                trend, price, ticker, auto=True,
+                # Rule 10 (RSI + Bollinger) settings
+                rsi_bollinger_enabled=bot_settings.get('rsi_bollinger_enabled', False),
+                rsi_bollinger_rsi_length=bot_settings.get('rsi_bollinger_rsi_length'),
+                rsi_bollinger_rsi_threshold=bot_settings.get('rsi_bollinger_rsi_threshold'),
+                rsi_bollinger_bb_length=bot_settings.get('rsi_bollinger_bb_length'),
+                rsi_bollinger_bb_stdev=bot_settings.get('rsi_bollinger_bb_stdev'),
+                rsi_bollinger_profit_pct=bot_settings.get('rsi_bollinger_profit_pct'),
+                rsi_bollinger_stop_pct=bot_settings.get('rsi_bollinger_stop_pct'),
+                rsi_bollinger_price_history=bot_settings.get('rsi_bollinger_price_history'),
+                rsi_bollinger_trailing_stop_enabled=bot_settings.get('rsi_bollinger_trailing_stop_enabled'),
+                rsi_bollinger_trailing_stop_pct=bot_settings.get('rsi_bollinger_trailing_stop_pct'),
+                rsi_bollinger_rsi_slope_enabled=bot_settings.get('rsi_bollinger_rsi_slope_enabled'),
+                # Rule 10 Safety features
+                rsi_bollinger_stop_enabled=bot_settings.get('rsi_bollinger_stop_enabled'),
+                rsi_bollinger_strict_enabled=bot_settings.get('rsi_bollinger_strict_enabled'),
+                rsi_bollinger_strict_bars=bot_settings.get('rsi_bollinger_strict_bars'),
+                rsi_bollinger_bounce_enabled=bot_settings.get('rsi_bollinger_bounce_enabled'),
+                rsi_bollinger_bounce_pct=bot_settings.get('rsi_bollinger_bounce_pct'),
+                rsi_bollinger_cooldown_enabled=bot_settings.get('rsi_bollinger_cooldown_enabled'),
+                rsi_bollinger_cooldown_minutes=bot_settings.get('rsi_bollinger_cooldown_minutes'),
+                rsi_bollinger_time_exit_enabled=bot_settings.get('rsi_bollinger_time_exit_enabled'),
+                rsi_bollinger_time_exit_minutes=bot_settings.get('rsi_bollinger_time_exit_minutes'),
+                rsi_bollinger_only_profit=bot_settings.get('rsi_bollinger_only_profit'),
+                # Rule 10 Advanced safety overrides
+                rsi_bollinger_size_multiplier=bot_settings.get('rsi_bollinger_size_multiplier'),
+                rsi_bollinger_daily_max_loss=bot_settings.get('rsi_bollinger_daily_max_loss'),
+                rsi_bollinger_max_losses_per_day=bot_settings.get('rsi_bollinger_max_losses_per_day'),
+                rsi_bollinger_trend_enabled=bot_settings.get('rsi_bollinger_trend_enabled'),
+                rsi_bollinger_trend_ma=bot_settings.get('rsi_bollinger_trend_ma'),
+                rsi_bollinger_liquidity_enabled=bot_settings.get('rsi_bollinger_liquidity_enabled'),
+                rsi_bollinger_min_avg_volume=bot_settings.get('rsi_bollinger_min_avg_volume'),
+                # Rule 11 (Momentum Tick Breakout) settings
+                rule_11_enabled=bot_settings.get('rule_11_enabled', False),
+                rule_11_price_jump=bot_settings.get('rule_11_price_jump'),
+                rule_11_window_seconds=bot_settings.get('rule_11_window_seconds'),
+                rule_11_volume_threshold=bot_settings.get('rule_11_volume_threshold'),
+                rule_11_limit_offset=bot_settings.get('rule_11_limit_offset'),
+                rule_11_price_history=bot_settings.get('rule_11_price_history'),
+                rule_11_profit_pct=bot_settings.get('rule_11_profit_pct'),
+                rule_11_stop_pct=bot_settings.get('rule_11_stop_pct'),
+                rule_11_stop_enabled=bot_settings.get('rule_11_stop_enabled'),
+                rule_11_only_profit=bot_settings.get('rule_11_only_profit'),
+                rule_11_trailing_stop_enabled=bot_settings.get('rule_11_trailing_stop_enabled'),
+                rule_11_trailing_stop_pct=bot_settings.get('rule_11_trailing_stop_pct'),
+                rule_11_cooldown_enabled=bot_settings.get('rule_11_cooldown_enabled'),
+                rule_11_cooldown_minutes=bot_settings.get('rule_11_cooldown_minutes'),
+                rule_11_size_multiplier=bot_settings.get('rule_11_size_multiplier'),
+                rule_11_daily_max_loss=bot_settings.get('rule_11_daily_max_loss'),
+                rule_11_max_losses_per_day=bot_settings.get('rule_11_max_losses_per_day'),
+                rule_11_trend_enabled=bot_settings.get('rule_11_trend_enabled'),
+                rule_11_trend_ma=bot_settings.get('rule_11_trend_ma'),
+                rule_11_liquidity_enabled=bot_settings.get('rule_11_liquidity_enabled'),
+                rule_11_min_avg_volume=bot_settings.get('rule_11_min_avg_volume'),
+                rule_11_min_tick_density=bot_settings.get('rule_11_min_tick_density'),
+                # Other rules
+                rule_1_enabled=bot_settings.get('rule_1_enabled'),
+                take_profit_amount=bot_settings.get('take_profit_amount'),
+                rule_2_enabled=bot_settings.get('rule_2_enabled'),
+                stop_loss_amount=bot_settings.get('stop_loss_amount'),
+                rule_3_enabled=bot_settings.get('rule_3_enabled'),
+                rule_3_drop_count=bot_settings.get('rule_3_drop_count'),
+                rule_4_enabled=bot_settings.get('rule_4_enabled'),
+                rule_5_enabled=bot_settings.get('rule_5_enabled'),
+                rule_5_down_minutes=bot_settings.get('rule_5_down_minutes'),
+                rule_5_reversal_amount=bot_settings.get('rule_5_reversal_amount'),
+                rule_5_scalp_amount=bot_settings.get('rule_5_scalp_amount'),
+                rule_6_enabled=bot_settings.get('rule_6_enabled'),
+                rule_6_down_minutes=bot_settings.get('rule_6_down_minutes'),
+                rule_6_profit_amount=bot_settings.get('rule_6_profit_amount'),
+                rule_7_enabled=bot_settings.get('rule_7_enabled'),
+                rule_7_up_minutes=bot_settings.get('rule_7_up_minutes'),
+                rule_8_enabled=bot_settings.get('rule_8_enabled'),
+                rule_8_buy_offset=bot_settings.get('rule_8_buy_offset'),
+                rule_8_sell_offset=bot_settings.get('rule_8_sell_offset'),
+                rule_9_enabled=bot_settings.get('rule_9_enabled'),
+                rule_9_amount=bot_settings.get('rule_9_amount'),
+                rule_9_flips=bot_settings.get('rule_9_flips'),
+                rule_9_window_minutes=bot_settings.get('rule_9_window_minutes'),
+                bot_id=bot_settings.get('bot_id'),
+                bot_name=bot_settings.get('bot_name'),
+            )
+        except Exception as e:
+            print(f"[Error] Failed to call trader.on_signal with bot settings: {e}")
 
     return {"id": uuid.uuid4().hex, "image_url": f"/uploads/{filename}", "ts": ts}
 
