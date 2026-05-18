@@ -313,6 +313,7 @@ async def ibkr_historical_data(
     ticker: str,
     duration: str = "1 D",
     bar_size: str = "1 min",
+    use_rth: bool = True,
     _auth=Depends(require_api_key)
 ):
     """Fetch historical price data from IBKR for charting.
@@ -341,7 +342,7 @@ async def ibkr_historical_data(
             durationStr=duration,
             barSizeSetting=bar_size,
             whatToShow="TRADES",
-            useRTH=True,  # Regular Trading Hours only
+            useRTH=bool(use_rth),
             formatDate=1,
         )
 
@@ -402,6 +403,7 @@ async def ibkr_replay_window(
     sell_time: Optional[str] = None,
     buffer_min: int = 10,
     bar_size: str = "1 min",
+    use_rth: bool = True,
     _auth=Depends(require_api_key),
 ):
     """Fetch historical bars for a focused replay window.
@@ -426,7 +428,7 @@ async def ibkr_replay_window(
 
     if start_dt is None and end_dt is None:
         # Fall back to default historical range if no window is provided.
-        return await ibkr_historical_data(ticker, duration="1 D", bar_size=bar_size)
+        return await ibkr_historical_data(ticker, duration="1 D", bar_size=bar_size, use_rth=use_rth)
 
     if start_dt is None and end_dt is not None:
         start_dt = end_dt - timedelta(minutes=max(1, int(buffer_min)))
@@ -458,7 +460,7 @@ async def ibkr_replay_window(
             durationStr=duration,
             barSizeSetting=bar_size,
             whatToShow="TRADES",
-            useRTH=True,
+            useRTH=bool(use_rth),
             formatDate=1,
         )
 
