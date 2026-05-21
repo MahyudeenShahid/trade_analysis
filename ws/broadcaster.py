@@ -26,7 +26,14 @@ async def broadcaster_loop():
     from services.bot_registry import list_bots_by_hwnd
     from trading.simulator import trader
     from db.queries import get_app_settings
-    from ibkr.order_book import ensure_top_of_book, get_mid_price, get_price_history, get_price_volume_history
+    from ibkr.order_book import (
+        ensure_top_of_book,
+        get_mid_price,
+        get_price_history,
+        get_price_volume_history,
+        get_snapshot,
+        get_top_of_book,
+    )
 
     ibkr_last_prices = {}
     
@@ -138,6 +145,20 @@ async def broadcaster_loop():
                         rsi_bollinger_time_exit_enabled = None
                         rsi_bollinger_time_exit_minutes = None
                         rsi_bollinger_only_profit = None
+                        rule_12_enabled = False
+                        rule_12_buy_threshold = None
+                        rule_12_sell_threshold = None
+                        rule_12_min_trades = None
+                        rule_12_lookback_seconds = None
+                        rule_12_weight_tape = None
+                        rule_12_weight_book = None
+                        rule_12_weight_trend = None
+                        rule_12_weight_momentum = None
+                        rule_12_weight_volume = None
+                        rule_12_weight_spread = None
+                        rule_12_weight_pullback = None
+                        rule_12_momentum_scale = None
+                        rule_12_spread_tight_pct = None
 
                         for bot in bot_list:
                             try:
@@ -220,6 +241,20 @@ async def broadcaster_loop():
                                 rule_11_liquidity_enabled = bot.get('rule_11_liquidity_enabled')
                                 rule_11_min_avg_volume = bot.get('rule_11_min_avg_volume')
                                 rule_11_min_tick_density = bot.get('rule_11_min_tick_density')
+                                rule_12_enabled = bool(bot.get('rule_12_enabled'))
+                                rule_12_buy_threshold = bot.get('rule_12_buy_threshold')
+                                rule_12_sell_threshold = bot.get('rule_12_sell_threshold')
+                                rule_12_min_trades = bot.get('rule_12_min_trades')
+                                rule_12_lookback_seconds = bot.get('rule_12_lookback_seconds')
+                                rule_12_weight_tape = bot.get('rule_12_weight_tape')
+                                rule_12_weight_book = bot.get('rule_12_weight_book')
+                                rule_12_weight_trend = bot.get('rule_12_weight_trend')
+                                rule_12_weight_momentum = bot.get('rule_12_weight_momentum')
+                                rule_12_weight_volume = bot.get('rule_12_weight_volume')
+                                rule_12_weight_spread = bot.get('rule_12_weight_spread')
+                                rule_12_weight_pullback = bot.get('rule_12_weight_pullback')
+                                rule_12_momentum_scale = bot.get('rule_12_momentum_scale')
+                                rule_12_spread_tight_pct = bot.get('rule_12_spread_tight_pct')
                                 default_trade = bot.get('default_trade_enabled', True)
                                 if default_trade is None:
                                     default_trade = True
@@ -237,6 +272,10 @@ async def broadcaster_loop():
                             rsi_bollinger_history = None
                             rsi_bollinger_avg_volume = None
                             rule_11_history = None
+                            rule_12_price_history = None
+                            rule_12_price_volume_history = None
+                            rule_12_top_book = None
+                            rule_12_depth_snapshot = None
 
                             if signal_source == 'ibkr':
                                 ibkr_ticker = str(bot_ticker).strip().upper()
@@ -263,6 +302,14 @@ async def broadcaster_loop():
                                     signal_trend = ''
                                 ibkr_last_prices[ibkr_ticker] = ibkr_price
                                 rsi_bollinger_history = get_price_history(ibkr_ticker)
+                                try:
+                                    lookback_s = int(rule_12_lookback_seconds) if rule_12_lookback_seconds is not None else 10
+                                except Exception:
+                                    lookback_s = 10
+                                rule_12_price_history = rsi_bollinger_history
+                                rule_12_price_volume_history = get_price_volume_history(ibkr_ticker, lookback_seconds=lookback_s)
+                                rule_12_top_book = get_top_of_book(ibkr_ticker)
+                                rule_12_depth_snapshot = get_snapshot(ibkr_ticker)
                                 # price+volume history for Rule 11 and compute avg volume for liquidity checks
                                 try:
                                     rule_11_history = get_price_volume_history(ibkr_ticker, lookback_seconds=int(rule_11_window_seconds) if rule_11_window_seconds else 5)
@@ -278,6 +325,9 @@ async def broadcaster_loop():
 
                             if signal_price is None:
                                 continue
+
+                            # Rules 10/11/12 require live IBKR data — disable in screenshot mode
+                            _ibkr_mode = signal_source == 'ibkr'
 
                             # Always call on_signal - Rule 1 now works alongside default logic
                             try:
@@ -317,7 +367,7 @@ async def broadcaster_loop():
                                     rule_9_amount=rule9_amount,
                                     rule_9_flips=rule9_flips,
                                     rule_9_window_minutes=rule9_window,
-                                    rsi_bollinger_enabled=rsi_bollinger_enabled,
+                                    rsi_bollinger_enabled=rsi_bollinger_enabled if _ibkr_mode else False,
                                     rsi_bollinger_rsi_length=rsi_bollinger_rsi_length,
                                     rsi_bollinger_rsi_threshold=rsi_bollinger_rsi_threshold,
                                     rsi_bollinger_bb_length=rsi_bollinger_bb_length,
@@ -346,7 +396,7 @@ async def broadcaster_loop():
                                     rsi_bollinger_trailing_stop_enabled=rsi_bollinger_trailing_stop_enabled,
                                     rsi_bollinger_trailing_stop_pct=rsi_bollinger_trailing_stop_pct,
                                     rsi_bollinger_rsi_slope_enabled=rsi_bollinger_rsi_slope_enabled,
-                                    rule_11_enabled=rule_11_enabled,
+                                    rule_11_enabled=rule_11_enabled if _ibkr_mode else False,
                                     rule_11_price_jump=rule_11_price_jump,
                                     rule_11_window_seconds=rule_11_window_seconds,
                                     rule_11_volume_threshold=rule_11_volume_threshold,
@@ -368,6 +418,23 @@ async def broadcaster_loop():
                                     rule_11_liquidity_enabled=rule_11_liquidity_enabled,
                                     rule_11_min_avg_volume=rule_11_min_avg_volume,
                                     rule_11_min_tick_density=rule_11_min_tick_density,
+                                    rule_12_enabled=rule_12_enabled if _ibkr_mode else False,
+                                    rule_12_buy_threshold=rule_12_buy_threshold,
+                                    rule_12_sell_threshold=rule_12_sell_threshold,
+                                    rule_12_min_trades=rule_12_min_trades,
+                                    rule_12_price_history=rule_12_price_history,
+                                    rule_12_price_volume_history=rule_12_price_volume_history,
+                                    rule_12_top_book=rule_12_top_book,
+                                    rule_12_depth_snapshot=rule_12_depth_snapshot,
+                                    rule_12_weight_tape=rule_12_weight_tape,
+                                    rule_12_weight_book=rule_12_weight_book,
+                                    rule_12_weight_trend=rule_12_weight_trend,
+                                    rule_12_weight_momentum=rule_12_weight_momentum,
+                                    rule_12_weight_volume=rule_12_weight_volume,
+                                    rule_12_weight_spread=rule_12_weight_spread,
+                                    rule_12_weight_pullback=rule_12_weight_pullback,
+                                    rule_12_momentum_scale=rule_12_momentum_scale,
+                                    rule_12_spread_tight_pct=rule_12_spread_tight_pct,
                                     default_trade_enabled=default_trade,
                                     bot_id=bot_id,
                                     bot_name=bot_name,

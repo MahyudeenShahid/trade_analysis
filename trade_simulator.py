@@ -10,6 +10,9 @@ This refactored version delegates to specialized modules:
 
 from typing import Optional, Dict, Callable
 from datetime import datetime
+import logging
+
+_logger = logging.getLogger(__name__)
 
 from trading.utils import parse_price, normalize_ticker, normalize_bot_id, make_state_key
 from trading.state import StateManager
@@ -148,6 +151,24 @@ class TradeSimulator:
                   rule_11_liquidity_enabled: Optional[bool] = None,
                   rule_11_min_avg_volume: Optional[int] = None,
                   rule_11_min_tick_density: Optional[int] = None,
+                  # Rule 12: tape + order book meter
+                  rule_12_enabled: bool = False,
+                  rule_12_buy_threshold: Optional[float] = None,
+                  rule_12_sell_threshold: Optional[float] = None,
+                  rule_12_min_trades: Optional[int] = None,
+                  rule_12_price_history: Optional[list] = None,
+                  rule_12_price_volume_history: Optional[list] = None,
+                  rule_12_top_book: Optional[dict] = None,
+                  rule_12_depth_snapshot: Optional[dict] = None,
+                  rule_12_weight_tape: Optional[float] = None,
+                  rule_12_weight_book: Optional[float] = None,
+                  rule_12_weight_trend: Optional[float] = None,
+                  rule_12_weight_momentum: Optional[float] = None,
+                  rule_12_weight_volume: Optional[float] = None,
+                  rule_12_weight_spread: Optional[float] = None,
+                  rule_12_weight_pullback: Optional[float] = None,
+                  rule_12_momentum_scale: Optional[float] = None,
+                  rule_12_spread_tight_pct: Optional[float] = None,
                   rule_4_start_time: Optional[str] = None,
                   rule_4_end_time: Optional[str] = None,
                   rule_4_days=None,
@@ -183,6 +204,7 @@ class TradeSimulator:
         sell_cb = lambda p, win_reason=None: self._sell(state_key, p, win_reason)
         buy_cb = lambda p: self._buy(state_key, p, size_multiplier=rsi_bollinger_size_multiplier)
         buy_cb_rule11 = lambda p: self._buy(state_key, p, size_multiplier=rule_11_size_multiplier)
+        buy_cb_rule12 = lambda p: self._buy(state_key, p)
         
         # RULE #1: take-profit sell (works alongside default logic)
         if rule_1_enabled:
@@ -248,8 +270,8 @@ class TradeSimulator:
                         sell_cb,
                     ):
                         return self.summary()
-                except Exception:
-                    pass
+                except Exception as _e:
+                    _logger.warning("[Rule10] maybe_rsi_bollinger_trade raised: %s", _e, exc_info=True)
 
             # RULE #5: 3-minute downtrend → reversal + scalp
             if rule_5_enabled:
@@ -332,6 +354,36 @@ class TradeSimulator:
                             sell_cb,
                         ):
                             return self.summary()
+                except Exception as _e:
+                    _logger.warning("[Rule11] maybe_rule11_trade raised: %s", _e, exc_info=True)
+
+            # RULE #12: tape + order book meter (aggressive buy/sell gate)
+            if rule_12_enabled:
+                try:
+                    history = rule_12_price_history if isinstance(rule_12_price_history, list) else state.price_history
+                    if rules.maybe_rule12_trade(
+                        state,
+                        price,
+                        history,
+                        rule_12_price_volume_history,
+                        rule_12_top_book,
+                        rule_12_depth_snapshot,
+                        buy_threshold=rule_12_buy_threshold,
+                        sell_threshold=rule_12_sell_threshold,
+                        min_trades=rule_12_min_trades,
+                        weight_tape=rule_12_weight_tape,
+                        weight_book=rule_12_weight_book,
+                        weight_trend=rule_12_weight_trend,
+                        weight_momentum=rule_12_weight_momentum,
+                        weight_volume=rule_12_weight_volume,
+                        weight_spread=rule_12_weight_spread,
+                        weight_pullback=rule_12_weight_pullback,
+                        momentum_scale=rule_12_momentum_scale,
+                        spread_tight_pct=rule_12_spread_tight_pct,
+                        buy_callback=buy_cb_rule12,
+                        sell_callback=sell_cb,
+                    ):
+                        return self.summary()
                 except Exception:
                     pass
             

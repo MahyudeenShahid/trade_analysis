@@ -62,6 +62,13 @@ class TickerState:
         # Rule 9 state
         self.rule9_flips: List[Dict] = []
         self.rule9_last_sell_time: Optional[datetime] = None  # cooldown start timestamp
+
+        # Rule 11 (Momentum Tick Breakout) state
+        self.rule11_peak_price: Optional[float] = None  # trailing stop tracking
+        self.rule11_last_loss_time: Optional[datetime] = None  # cooldown after loss
+
+        # Rule 12 (Tape + Order Book Meter) state
+        self.rule12_last_meter: Optional[dict] = None  # last meter reading
     
     def to_dict(self) -> Dict:
         """Convert state to dictionary for serialization."""

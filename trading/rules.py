@@ -1,15 +1,19 @@
 """
-Trading rules implementation (Rules 1-9).
+Trading rules implementation (Rules 1-12).
 Each rule modifies trading behavior based on specific conditions.
 """
 
 from typing import TYPE_CHECKING, Optional
+import logging
 import math
 import time
 from datetime import datetime
 
 if TYPE_CHECKING:
     from trading.state import TickerState
+
+
+logger = logging.getLogger(__name__)
 
 
 def maybe_take_profit_sell(state: 'TickerState', current_price: float, 
@@ -364,6 +368,22 @@ def _parse_iso_ts(ts_val) -> Optional[datetime]:
         return None
 
 
+def _log_rsi_bb_block(state: 'TickerState', reason: str, details: Optional[str] = None):
+    try:
+        last_reason = getattr(state, "rsi_bollinger_last_block_reason", None)
+        last_ts = float(getattr(state, "rsi_bollinger_last_block_ts", 0.0) or 0.0)
+        now = time.time()
+        if reason != last_reason or (now - last_ts) >= 5.0:
+            msg = f"[Rule10] Blocked: {reason}"
+            if details:
+                msg = f"{msg} | {details}"
+            logger.info(msg)
+            setattr(state, "rsi_bollinger_last_block_reason", reason)
+            setattr(state, "rsi_bollinger_last_block_ts", now)
+    except Exception:
+        pass
+
+
 def maybe_rsi_bollinger_trade(state: 'TickerState', current_price: float,
                               price_history: list,
                               rsi_length: Optional[int], rsi_threshold: Optional[float],
@@ -432,14 +452,16 @@ def maybe_rsi_bollinger_trade(state: 'TickerState', current_price: float,
     try:
         if daily_max_loss is not None:
             dm = float(daily_max_loss)
-            if dm >= 0 and getattr(state, 'daily_loss_total', 0.0) >= dm:
+            if dm > 0 and getattr(state, 'daily_loss_total', 0.0) >= dm:
+                _log_rsi_bb_block(state, "daily_max_loss", f"loss={getattr(state, 'daily_loss_total', 0.0):.2f} >= {dm:.2f}")
                 return True
     except Exception:
         pass
     try:
         if max_losses_per_day is not None:
             ml = int(max_losses_per_day)
-            if ml >= 0 and getattr(state, 'daily_loss_count', 0) >= ml:
+            if ml > 0 and getattr(state, 'daily_loss_count', 0) >= ml:
+                _log_rsi_bb_block(state, "max_losses_per_day", f"count={getattr(state, 'daily_loss_count', 0)} >= {ml}")
                 return True
     except Exception:
         pass
@@ -451,6 +473,7 @@ def maybe_rsi_bollinger_trade(state: 'TickerState', current_price: float,
             if ma_len > 1 and isinstance(price_history, list) and len(price_history) >= ma_len:
                 ma = sum(price_history[-ma_len:]) / float(ma_len)
                 if float(current_price) < ma:
+                    _log_rsi_bb_block(state, "trend_filter", f"price={float(current_price):.4f} < ma({ma_len})={ma:.4f}")
                     return True
     except Exception:
         pass
@@ -460,11 +483,14 @@ def maybe_rsi_bollinger_trade(state: 'TickerState', current_price: float,
         if liquidity_enabled and min_avg_volume is not None:
             if avg_volume is None:
                 # no volume info available — block by default to be safe
+                _log_rsi_bb_block(state, "liquidity_filter", "avg_volume=none")
                 return True
             try:
                 if float(avg_volume) < float(min_avg_volume):
+                    _log_rsi_bb_block(state, "liquidity_filter", f"avg_volume={float(avg_volume):.2f} < {float(min_avg_volume):.2f}")
                     return True
             except Exception:
+                _log_rsi_bb_block(state, "liquidity_filter", "avg_volume=parse_error")
                 return True
     except Exception:
         pass
@@ -536,6 +562,7 @@ def maybe_rsi_bollinger_trade(state: 'TickerState', current_price: float,
     history = price_history if isinstance(price_history, list) else []
     required = max(rsi_len + 1, bb_len)
     if len(history) < required:
+        _log_rsi_bb_block(state, "insufficient_history", f"have={len(history)} need={required}")
         return True
 
     if cooldown_on and state.rsi_bollinger_last_loss_time is not None:
@@ -545,6 +572,7 @@ def maybe_rsi_bollinger_trade(state: 'TickerState', current_price: float,
                 state.rsi_bollinger_waiting_bounce = False
                 state.rsi_bollinger_trigger_price = None
                 state.rsi_bollinger_oversold_count = 0
+                _log_rsi_bb_block(state, "cooldown", f"elapsed={elapsed:.2f}m < {cooldown_m:.2f}m")
                 return True
         except Exception:
             pass
@@ -552,6 +580,7 @@ def maybe_rsi_bollinger_trade(state: 'TickerState', current_price: float,
     rsi = _compute_rsi(history, rsi_len)
     bands = _compute_bollinger(history, bb_len, bb_sd)
     if rsi is None or bands is None:
+        _log_rsi_bb_block(state, "indicator_unavailable")
         return True
 
     _, _upper, lower = bands
@@ -569,12 +598,20 @@ def maybe_rsi_bollinger_trade(state: 'TickerState', current_price: float,
         if not ready:
             state.rsi_bollinger_oversold_count = 0
 
+    if not rsi_ok:
+        _log_rsi_bb_block(state, "rsi_gate", f"rsi={rsi:.2f} > {rsi_th:.2f}")
+    elif not touch_lower:
+        _log_rsi_bb_block(state, "bollinger_gate", f"price={float(current_price):.4f} > lower={float(lower):.4f}")
+    elif strict_on and not ready:
+        _log_rsi_bb_block(state, "strict_bars", f"count={state.rsi_bollinger_oversold_count} < {strict_n}")
+
     # RSI Slope reversal confirmation
     if ready and bool(rsi_slope_enabled):
         rsi_prev = _compute_rsi(history[:-1], rsi_len)
         if rsi_prev is not None:
             # RSI must be strictly ascending (reversing upwards from oversold)
             if rsi <= rsi_prev:
+                _log_rsi_bb_block(state, "rsi_slope", f"rsi={rsi:.2f} <= prev={rsi_prev:.2f}")
                 ready = False
 
     if bounce_on:
@@ -588,7 +625,13 @@ def maybe_rsi_bollinger_trade(state: 'TickerState', current_price: float,
                     state.rsi_bollinger_waiting_bounce = False
                     state.rsi_bollinger_trigger_price = None
                     state.rsi_bollinger_oversold_count = 0
+                    try:
+                        setattr(state, "rsi_bollinger_last_block_reason", None)
+                    except Exception:
+                        pass
                     buy_callback(current_price)
+                else:
+                    _log_rsi_bb_block(state, "bounce_wait", f"price={float(current_price):.4f} < target={bounce_target:.4f}")
             return True
 
         if ready:
@@ -600,6 +643,10 @@ def maybe_rsi_bollinger_trade(state: 'TickerState', current_price: float,
         state.rsi_bollinger_waiting_bounce = False
         state.rsi_bollinger_trigger_price = None
         state.rsi_bollinger_oversold_count = 0
+        try:
+            setattr(state, "rsi_bollinger_last_block_reason", None)
+        except Exception:
+            pass
         buy_callback(current_price)
     return True
 
@@ -681,14 +728,14 @@ def maybe_rule11_trade(state: 'TickerState', trend: str, current_price: float,
     try:
         if daily_max_loss is not None:
             dm = float(daily_max_loss)
-            if dm >= 0 and getattr(state, 'daily_loss_total', 0.0) >= dm:
+            if dm > 0 and getattr(state, 'daily_loss_total', 0.0) >= dm:
                 return True
     except Exception:
         pass
     try:
         if max_losses_per_day is not None:
             ml = int(max_losses_per_day)
-            if ml >= 0 and getattr(state, 'daily_loss_count', 0) >= ml:
+            if ml > 0 and getattr(state, 'daily_loss_count', 0) >= ml:
                 return True
     except Exception:
         pass
@@ -731,7 +778,8 @@ def maybe_rule11_trade(state: 'TickerState', trend: str, current_price: float,
         pj = 0.0
 
     if pj <= 0:
-        return False
+        # price_jump is misconfigured or zero — block default logic but don't buy
+        return True
 
     pv = None
     try:
@@ -749,7 +797,8 @@ def maybe_rule11_trade(state: 'TickerState', trend: str, current_price: float,
         pv = None
 
     if not pv:
-        return False
+        # No tick data available — block default logic but don't buy
+        return True
 
     try:
         prices = [float(x.get('price')) for x in pv if x.get('price') is not None]
@@ -792,3 +841,280 @@ def maybe_rule11_trade(state: 'TickerState', trend: str, current_price: float,
         return True
 
     return False
+
+
+def _clamp(value: float, lo: float, hi: float) -> float:
+    return max(lo, min(hi, value))
+
+
+def _score_to_pct(score: float) -> float:
+    return _clamp((score + 1.0) * 50.0, 0.0, 100.0)
+
+
+def _calc_rule12_tape_pct(price_volume_history: list, top_book: Optional[dict], min_trades: int) -> float:
+    rows = [r for r in price_volume_history if isinstance(r, dict) and r.get("price") is not None]
+    if not rows:
+        return 50.0
+
+    trade_rows = [r for r in rows if str(r.get("source") or "").lower() == "trade"]
+    if trade_rows:
+        rows = trade_rows
+
+    if len(rows) < max(1, int(min_trades)):
+        return 50.0
+
+    bid = None
+    ask = None
+    mid = None
+    if isinstance(top_book, dict):
+        try:
+            bid = float(top_book.get("bid")) if top_book.get("bid") is not None else None
+        except Exception:
+            bid = None
+        try:
+            ask = float(top_book.get("ask")) if top_book.get("ask") is not None else None
+        except Exception:
+            ask = None
+    if bid is not None and ask is not None:
+        mid = (bid + ask) / 2.0
+
+    ask_vol = 0.0
+    bid_vol = 0.0
+    for r in rows:
+        try:
+            price = float(r.get("price"))
+        except Exception:
+            continue
+        try:
+            vol = float(r.get("volume") or 1.0)
+        except Exception:
+            vol = 1.0
+
+        if ask is not None and price >= ask:
+            ask_vol += vol
+        elif bid is not None and price <= bid:
+            bid_vol += vol
+        elif mid is not None:
+            if price > mid:
+                ask_vol += vol
+            elif price < mid:
+                bid_vol += vol
+
+    total = ask_vol + bid_vol
+    if total <= 0:
+        return 50.0
+    return _clamp((ask_vol / total) * 100.0, 0.0, 100.0)
+
+
+def _calc_rule12_book_pct(depth_snapshot: Optional[dict], levels: int = 5) -> float:
+    if not isinstance(depth_snapshot, dict):
+        return 50.0
+    bids = depth_snapshot.get("bids") or []
+    asks = depth_snapshot.get("asks") or []
+    bid_sum = 0.0
+    ask_sum = 0.0
+    for row in bids[:max(1, int(levels))]:
+        try:
+            bid_sum += float(row.get("size") or 0.0)
+        except Exception:
+            pass
+    for row in asks[:max(1, int(levels))]:
+        try:
+            ask_sum += float(row.get("size") or 0.0)
+        except Exception:
+            pass
+    total = bid_sum + ask_sum
+    if total <= 0:
+        return 50.0
+    return _clamp((bid_sum / total) * 100.0, 0.0, 100.0)
+
+
+def _calc_rule12_trend_pct(price_history: list, lookback: int = 20) -> float:
+    prices = [float(p) for p in (price_history or []) if p is not None]
+    if len(prices) < 3:
+        return 50.0
+    window = prices[-max(3, int(lookback)) :]
+    first = window[0]
+    last = window[-1]
+    hi = max(window)
+    lo = min(window)
+    rng = hi - lo
+    if rng <= 0:
+        return 50.0
+    trend_score = _clamp((last - first) / rng, -1.0, 1.0)
+    return _score_to_pct(trend_score)
+
+
+def _calc_rule12_momentum_pct(price_volume_history: list, momentum_scale: float = 0.0005) -> float:
+    rows = [r for r in price_volume_history if isinstance(r, dict) and r.get("price") is not None]
+    if len(rows) < 2:
+        return 50.0
+    first = rows[0]
+    last = rows[-1]
+    try:
+        first_price = float(first.get("price"))
+        last_price = float(last.get("price"))
+        first_ts = float(first.get("ts"))
+        last_ts = float(last.get("ts"))
+    except Exception:
+        return 50.0
+    dt = last_ts - first_ts
+    if dt <= 0:
+        return 50.0
+    avg_price = (first_price + last_price) / 2.0 if (first_price + last_price) != 0 else 1.0
+    rel_speed = ((last_price - first_price) / avg_price) / dt
+    scale = float(momentum_scale) if momentum_scale is not None else 0.0005
+    if scale <= 0:
+        return 50.0
+    score = _clamp(rel_speed / scale, -1.0, 1.0)
+    return _score_to_pct(score)
+
+
+def _calc_rule12_volume_pct(price_volume_history: list) -> float:
+    rows = [r for r in price_volume_history if isinstance(r, dict)]
+    if not rows:
+        return 50.0
+    trade_rows = [r for r in rows if str(r.get("source") or "").lower() == "trade"]
+    if trade_rows:
+        rows = trade_rows
+
+    vols = []
+    for r in rows:
+        try:
+            vols.append(float(r.get("volume") or 0.0))
+        except Exception:
+            vols.append(0.0)
+    if len(vols) < 2:
+        return 50.0
+    split = max(1, len(vols) // 2)
+    prev_vol = sum(vols[:split])
+    recent_vol = sum(vols[split:])
+    total = prev_vol + recent_vol
+    if total <= 0:
+        return 50.0
+    score = _clamp((recent_vol - prev_vol) / total, -1.0, 1.0)
+    return _score_to_pct(score)
+
+
+def _calc_rule12_spread_pct(top_book: Optional[dict], tight_pct: float = 0.001) -> float:
+    if not isinstance(top_book, dict):
+        return 50.0
+    try:
+        bid = float(top_book.get("bid")) if top_book.get("bid") is not None else None
+        ask = float(top_book.get("ask")) if top_book.get("ask") is not None else None
+    except Exception:
+        bid, ask = None, None
+    if bid is None or ask is None:
+        return 50.0
+    mid = (bid + ask) / 2.0 if (bid + ask) != 0 else None
+    if mid is None or mid <= 0:
+        return 50.0
+    spread_pct = (ask - bid) / mid
+    tight = float(tight_pct) if tight_pct is not None else 0.001
+    if tight <= 0:
+        return 50.0
+    score = 1.0 - min(spread_pct / tight, 2.0)
+    return _score_to_pct(_clamp(score, -1.0, 1.0))
+
+
+def _calc_rule12_pullback_pct(price_history: list, lookback: int = 20) -> float:
+    prices = [float(p) for p in (price_history or []) if p is not None]
+    if len(prices) < 3:
+        return 50.0
+    window = prices[-max(3, int(lookback)) :]
+    peak = max(window)
+    trough = min(window)
+    if peak <= trough:
+        return 50.0
+    last = window[-1]
+    pullback_ratio = (peak - last) / (peak - trough)
+    score = 1.0 - min(pullback_ratio * 2.0, 2.0)
+    return _score_to_pct(_clamp(score, -1.0, 1.0))
+
+
+def maybe_rule12_trade(
+    state: 'TickerState',
+    current_price: float,
+    price_history: Optional[list],
+    price_volume_history: Optional[list],
+    top_book: Optional[dict],
+    depth_snapshot: Optional[dict],
+    buy_threshold: Optional[float] = None,
+    sell_threshold: Optional[float] = None,
+    min_trades: Optional[int] = None,
+    weight_tape: Optional[float] = None,
+    weight_book: Optional[float] = None,
+    weight_trend: Optional[float] = None,
+    weight_momentum: Optional[float] = None,
+    weight_volume: Optional[float] = None,
+    weight_spread: Optional[float] = None,
+    weight_pullback: Optional[float] = None,
+    momentum_scale: Optional[float] = None,
+    spread_tight_pct: Optional[float] = None,
+    buy_callback=None,
+    sell_callback=None,
+) -> bool:
+    """Rule #12: Tape + order book meter for aggressive buy/sell gating."""
+    ph = price_history if isinstance(price_history, list) else []
+    pv = price_volume_history if isinstance(price_volume_history, list) else []
+
+    min_trades = int(min_trades) if min_trades is not None else 5
+    buy_threshold = float(buy_threshold) if buy_threshold is not None else 70.0
+    sell_threshold = float(sell_threshold) if sell_threshold is not None else 60.0
+
+    wt_tape = float(weight_tape) if weight_tape is not None else 0.4
+    wt_book = float(weight_book) if weight_book is not None else 0.2
+    wt_trend = float(weight_trend) if weight_trend is not None else 0.2
+    wt_momentum = float(weight_momentum) if weight_momentum is not None else 0.1
+    wt_volume = float(weight_volume) if weight_volume is not None else 0.1
+    wt_spread = float(weight_spread) if weight_spread is not None else 0.0
+    wt_pullback = float(weight_pullback) if weight_pullback is not None else 0.0
+
+    tape_pct = _calc_rule12_tape_pct(pv, top_book, min_trades)
+    book_pct = _calc_rule12_book_pct(depth_snapshot, levels=5)
+    trend_pct = _calc_rule12_trend_pct(ph, lookback=20)
+    momentum_pct = _calc_rule12_momentum_pct(pv, momentum_scale=momentum_scale or 0.0005)
+    volume_pct = _calc_rule12_volume_pct(pv)
+    spread_pct = _calc_rule12_spread_pct(top_book, tight_pct=spread_tight_pct or 0.001)
+    pullback_pct = _calc_rule12_pullback_pct(ph, lookback=20)
+
+    weights = [
+        (tape_pct, wt_tape),
+        (book_pct, wt_book),
+        (trend_pct, wt_trend),
+        (momentum_pct, wt_momentum),
+        (volume_pct, wt_volume),
+        (spread_pct, wt_spread),
+        (pullback_pct, wt_pullback),
+    ]
+    total_w = sum(w for _, w in weights if w > 0)
+    if total_w <= 0:
+        buyer_pct = 50.0
+    else:
+        buyer_pct = sum(pct * w for pct, w in weights if w > 0) / total_w
+    buyer_pct = _clamp(buyer_pct, 0.0, 100.0)
+    seller_pct = 100.0 - buyer_pct
+
+    try:
+        state.rule12_last_meter = {
+            "buyer_pct": buyer_pct,
+            "seller_pct": seller_pct,
+            "tape_pct": tape_pct,
+            "book_pct": book_pct,
+            "trend_pct": trend_pct,
+            "momentum_pct": momentum_pct,
+            "volume_pct": volume_pct,
+            "spread_pct": spread_pct,
+            "pullback_pct": pullback_pct,
+        }
+    except Exception:
+        pass
+
+    if state.position is None:
+        if buyer_pct >= buy_threshold and buy_callback is not None:
+            buy_callback(current_price)
+        return True
+
+    if seller_pct >= sell_threshold and sell_callback is not None:
+        sell_callback(current_price, win_reason="RULE_12")
+    return True

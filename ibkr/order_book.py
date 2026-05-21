@@ -147,10 +147,18 @@ def _build_bbo_rows(top_book: Optional[dict]):
     return bids, asks
 
 
-def _record_price_sample(ticker: str, price: Optional[float], volume: Optional[float] = 0.0, ts: Optional[float] = None, force: bool = False):
+def _record_price_sample(
+    ticker: str,
+    price: Optional[float],
+    volume: Optional[float] = 0.0,
+    ts: Optional[float] = None,
+    force: bool = False,
+    source: Optional[str] = None,
+):
     """Record a timestamped price sample with optional associated volume.
 
     - `force=True` bypasses the sampling cadence and records the sample immediately.
+    - `source` can be "trade" or "quote" for downstream filtering.
     """
     if price is None:
         return
@@ -162,7 +170,14 @@ def _record_price_sample(ticker: str, price: Optional[float], volume: Optional[f
 
     _last_price_sample_ts[ticker] = ts
     history = _price_history.setdefault(ticker, [])
-    history.append({"ts": ts, "price": float(price), "volume": float(volume or 0.0)})
+    history.append(
+        {
+            "ts": ts,
+            "price": float(price),
+            "volume": float(volume or 0.0),
+            "source": (str(source).strip().lower() if source else "quote"),
+        }
+    )
 
     cutoff = ts - _PRICE_HISTORY_WINDOW_SECONDS
     while history and history[0].get("ts", 0) < cutoff:
@@ -289,7 +304,14 @@ def _ensure_top_of_book_subscription(ticker: str, contract):
         elif ask is not None:
             mid_price = ask
         # record price sample and include reported top-of-book sizes as approximate volume
-        _record_price_sample(ticker, mid_price, volume=(bid_size + ask_size) if (bid_size or ask_size) else 0.0, ts=ts, force=True)
+        _record_price_sample(
+            ticker,
+            mid_price,
+            volume=(bid_size + ask_size) if (bid_size or ask_size) else 0.0,
+            ts=ts,
+            force=True,
+            source="quote",
+        )
 
         # Only overwrite cached rows while L2 is absent; once true DOM appears,
         # keep L2 as authoritative.
@@ -359,7 +381,14 @@ def _ensure_top_of_book_subscription(ticker: str, contract):
                     except Exception:
                         size_f = 0.0
                     if price_f is not None:
-                        _record_price_sample(ticker, price_f, volume=size_f, ts=time.time(), force=True)
+                        _record_price_sample(
+                            ticker,
+                            price_f,
+                            volume=size_f,
+                            ts=time.time(),
+                            force=True,
+                            source="trade",
+                        )
                 except Exception:
                     pass
 
@@ -581,7 +610,7 @@ async def subscribe_depth(
                         pass
             except Exception:
                 total_vol = 0.0
-            _record_price_sample(ticker, mid_price, volume=total_vol, force=True)
+            _record_price_sample(ticker, mid_price, volume=total_vol, force=True, source="quote")
 
         depth_ticker.updateEvent += on_depth_update
         logger.info(
