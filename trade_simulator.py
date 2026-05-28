@@ -169,6 +169,19 @@ class TradeSimulator:
                   rule_12_weight_pullback: Optional[float] = None,
                   rule_12_momentum_scale: Optional[float] = None,
                   rule_12_spread_tight_pct: Optional[float] = None,
+                  # Rule 13: Blue Graph Direction (slope-based auto-trade)
+                  rule_13_enabled: bool = False,
+                  rule_13_lookback: Optional[int] = None,
+                  rule_13_slope_threshold_pct: Optional[float] = None,
+                  rule_13_profit_pct: Optional[float] = None,
+                  rule_13_stop_pct: Optional[float] = None,
+                  rule_13_stop_enabled: Optional[bool] = None,
+                  rule_13_only_profit: Optional[bool] = None,
+                  rule_13_cooldown_minutes: Optional[float] = None,
+                  # Rule 10 blue-graph gate (slope must point UP to allow RSI/BB entry)
+                  rsi_bollinger_graph_trend_enabled: bool = False,
+                  rsi_bollinger_graph_trend_lookback: Optional[int] = None,
+                  rsi_bollinger_graph_trend_threshold_pct: Optional[float] = None,
                   rule_4_start_time: Optional[str] = None,
                   rule_4_end_time: Optional[str] = None,
                   rule_4_days=None,
@@ -235,7 +248,18 @@ class TradeSimulator:
             if rsi_bollinger_enabled:
                 try:
                     history = rsi_bollinger_price_history if isinstance(rsi_bollinger_price_history, list) else state.price_history
-                    if rules.maybe_rsi_bollinger_trade(
+                    # Optional blue-graph gate: only enter if price slope is UP
+                    graph_gate_ok = True
+                    if rsi_bollinger_graph_trend_enabled and state.position is None:
+                        try:
+                            graph_gate_ok = rules.graph_trend_filter_ok(
+                                history,
+                                lookback=int(rsi_bollinger_graph_trend_lookback or 5),
+                                threshold_pct=float(rsi_bollinger_graph_trend_threshold_pct or 0.0005),
+                            )
+                        except Exception:
+                            graph_gate_ok = True  # fail-open
+                    if graph_gate_ok and rules.maybe_rsi_bollinger_trade(
                         state,
                         price,
                         history,
@@ -386,7 +410,28 @@ class TradeSimulator:
                         return self.summary()
                 except Exception:
                     pass
-            
+
+            # RULE #13: Blue Graph Direction (slope-based auto-trade)
+            if rule_13_enabled:
+                try:
+                    if rules.maybe_rule13_trade(
+                        state,
+                        price,
+                        price_history=state.price_history,
+                        lookback=int(rule_13_lookback or 5),
+                        slope_threshold_pct=float(rule_13_slope_threshold_pct or 0.0005),
+                        profit_pct=float(rule_13_profit_pct or 0.2),
+                        stop_pct=float(rule_13_stop_pct or 0.4),
+                        stop_enabled=bool(rule_13_stop_enabled if rule_13_stop_enabled is not None else True),
+                        only_profit=bool(rule_13_only_profit or False),
+                        cooldown_minutes=float(rule_13_cooldown_minutes or 0.0),
+                        buy_callback=buy_cb_rule12,
+                        sell_callback=sell_cb,
+                    ):
+                        return self.summary()
+                except Exception as _e:
+                    _logger.warning("[Rule13] maybe_rule13_trade raised: %s", _e, exc_info=True)
+
             # Default: buy every rise, sell every fall (can be disabled per-bot)
             if default_trade_enabled:
                 if trend == "up" and state.position is None:

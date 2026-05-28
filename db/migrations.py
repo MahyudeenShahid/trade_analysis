@@ -174,6 +174,19 @@ def init_db():
             rsi_bollinger_trailing_stop_enabled INTEGER DEFAULT 0,
             rsi_bollinger_trailing_stop_pct REAL DEFAULT 0.1,
             rsi_bollinger_rsi_slope_enabled INTEGER DEFAULT 0,
+            -- Rule 10 blue-graph gate
+            rsi_bollinger_graph_trend_enabled INTEGER DEFAULT 0,
+            rsi_bollinger_graph_trend_lookback INTEGER DEFAULT 5,
+            rsi_bollinger_graph_trend_threshold_pct REAL DEFAULT 0.0005,
+            -- Rule 13: Blue Graph Direction
+            rule_13_enabled INTEGER DEFAULT 0,
+            rule_13_lookback INTEGER DEFAULT 5,
+            rule_13_slope_threshold_pct REAL DEFAULT 0.0005,
+            rule_13_profit_pct REAL DEFAULT 0.2,
+            rule_13_stop_pct REAL DEFAULT 0.4,
+            rule_13_stop_enabled INTEGER DEFAULT 1,
+            rule_13_only_profit INTEGER DEFAULT 0,
+            rule_13_cooldown_minutes REAL DEFAULT 0.0,
             meta TEXT
         )
         """
@@ -436,6 +449,19 @@ def init_db():
             ("rule_12_weight_pullback", "REAL DEFAULT 0.0"),
             ("rule_12_momentum_scale", "REAL DEFAULT 0.0005"),
             ("rule_12_spread_tight_pct", "REAL DEFAULT 0.001"),
+            # Rule 10 blue-graph gate
+            ("rsi_bollinger_graph_trend_enabled", "INTEGER DEFAULT 0"),
+            ("rsi_bollinger_graph_trend_lookback", "INTEGER DEFAULT 5"),
+            ("rsi_bollinger_graph_trend_threshold_pct", "REAL DEFAULT 0.0005"),
+            # Rule 13: Blue Graph Direction
+            ("rule_13_enabled", "INTEGER DEFAULT 0"),
+            ("rule_13_lookback", "INTEGER DEFAULT 5"),
+            ("rule_13_slope_threshold_pct", "REAL DEFAULT 0.0005"),
+            ("rule_13_profit_pct", "REAL DEFAULT 0.2"),
+            ("rule_13_stop_pct", "REAL DEFAULT 0.4"),
+            ("rule_13_stop_enabled", "INTEGER DEFAULT 1"),
+            ("rule_13_only_profit", "INTEGER DEFAULT 0"),
+            ("rule_13_cooldown_minutes", "REAL DEFAULT 0.0"),
         ]
         for col, typ in bot_additions:
             if col not in existing_bots:

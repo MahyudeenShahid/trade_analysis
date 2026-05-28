@@ -1,5 +1,5 @@
 """
-Trading rules implementation (Rules 1-12).
+Trading rules implementation (Rules 1-13).
 Each rule modifies trading behavior based on specific conditions.
 """
 
@@ -14,6 +14,20 @@ if TYPE_CHECKING:
 
 
 logger = logging.getLogger(__name__)
+
+# Rule 13 — Blue Graph Direction (slope-based buy/sell)
+from .rule13 import maybe_rule13_trade, _compute_slope_pct  # noqa: E402,F401
+
+
+def graph_trend_filter_ok(price_history: list, lookback: int = 5, threshold_pct: float = 0.0005) -> bool:
+    """
+    Returns True when recent prices are sloping UP (blue graph pointing up).
+    Used as an optional gate inside Rule 10 (rsi_bollinger_graph_trend_enabled).
+    """
+    slope = _compute_slope_pct(price_history, lookback)
+    if slope is None:
+        return True  # insufficient data — do not block the trade
+    return slope > threshold_pct
 
 
 def maybe_take_profit_sell(state: 'TickerState', current_price: float, 
