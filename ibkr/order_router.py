@@ -225,9 +225,9 @@ async def handle_trade_event(trade_dict: dict, bot_row: dict, hwnd: int, get_cur
 
         # Determine order type
         if direction == "buy":
-            order_type = bot_row.get("buy_order_type") or "market"
+            order_type = bot_row.get("buy_order_type") or "limit"
         else:
-            order_type = bot_row.get("sell_order_type") or "market"
+            order_type = bot_row.get("sell_order_type") or "limit"
 
         # Determine quantity
         qty = _calc_qty(bot_row, cfg, price)

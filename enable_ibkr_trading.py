@@ -36,8 +36,8 @@ with DB_LOCK:
                 live_trading_enabled = 1,
                 order_size_type = COALESCE(order_size_type, 'fixed'),
                 order_size_value = COALESCE(order_size_value, 1.0),
-                buy_order_type = COALESCE(buy_order_type, 'market'),
-                sell_order_type = COALESCE(sell_order_type, 'market'),
+                buy_order_type = COALESCE(buy_order_type, 'limit'),
+                sell_order_type = COALESCE(sell_order_type, 'limit'),
                 retry_delay_secs = COALESCE(retry_delay_secs, 5.0),
                 max_retries = COALESCE(max_retries, 3)
         """)
