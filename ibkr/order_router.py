@@ -22,6 +22,38 @@ logger = logging.getLogger(__name__)
 DEFAULT_MAX_RETRIES = 3
 ORDER_FILL_TIMEOUT = 30  # seconds to wait for a fill
 
+# ---------------------------------------------------------------------------
+# Non-retryable error patterns — bail immediately if any of these appear
+# in the IBKR cancel reason or error message. Retrying won't help.
+# ---------------------------------------------------------------------------
+NON_RETRYABLE_PATTERNS = [
+    "No market data on major exchange",   # Market closed / no data
+    "no market data",
+    "market closed",
+    "outside rth",
+    "outside regular trading hours",
+    "Order Canceled - reason",             # IBKR-initiated cancel with explicit reason
+    "Order rejected",
+    "201",                                  # Order rejected
+    "200",                                  # No security definition
+    "The contract is not available",
+    "Invalid order",
+    "Margin required",
+    "insufficient funds",
+    "account does not have trading permissions",
+    "not subscribed",
+]
+
+
+def _is_non_retryable(error_text: str) -> bool:
+    """Return True if the error is permanent and retrying will not help."""
+    low = (error_text or "").lower()
+    for pattern in NON_RETRYABLE_PATTERNS:
+        if pattern.lower() in low:
+            return True
+    return False
+
+
 
 async def place_order(
     req: IBKROrderRequest,
@@ -164,12 +196,46 @@ async def place_order(
                     except Exception as cancel_err:
                         logger.warning(f"[IBKR] Failed to cancel order: {cancel_err}")
 
-                last_error = f"Order ended with status: {status}"
+                # Try to extract the real IBKR cancel reason from trade.log entries
+                cancel_reason = None
+                try:
+                    for log_entry in reversed(trade.log):
+                        msg = str(getattr(log_entry, 'message', '') or '')
+                        if 'Order Canceled' in msg or 'reason:' in msg:
+                            cancel_reason = msg
+                            break
+                        # Also check errorCode 202 specifically
+                        if getattr(log_entry, 'errorCode', None) == 202:
+                            cancel_reason = msg or f"Order cancelled by IBKR (error 202)"
+                            break
+                except Exception:
+                    pass
+
+                if cancel_reason:
+                    last_error = cancel_reason
+                else:
+                    last_error = f"Order ended with status: {status}"
                 logger.warning(f"[IBKR] {last_error} (attempt {attempt + 1}/{max_retries})")
+
+                # If this is a permanent error (market closed, no data, rejected)
+                # stop retrying immediately — it won't succeed
+                if _is_non_retryable(last_error):
+                    logger.warning(
+                        f"[IBKR] Non-retryable error detected — aborting order: {last_error}"
+                    )
+                    return IBKROrderResult(
+                        ok=False,
+                        error_msg=f"Order cancelled (non-retryable): {last_error}",
+                        retries=attempt,
+                    )
 
         except Exception as e:
             last_error = _parse_ibkr_error(str(e))
             logger.error(f"[IBKR] place_order attempt {attempt + 1}/{max_retries} failed: {last_error}")
+            # Non-retryable exceptions — bail out immediately
+            if _is_non_retryable(last_error):
+                logger.warning(f"[IBKR] Non-retryable exception — aborting: {last_error}")
+                return IBKROrderResult(ok=False, error_msg=last_error, retries=attempt)
 
         if attempt < max_retries - 1:
             logger.info(f"[IBKR] Retrying in {retry_delay}s …")
@@ -494,8 +560,8 @@ def _parse_ibkr_error(error_str: str) -> str:
     error_map = {
         "110": "Price out of range - limit price may be too far from market",
         "200": "No security definition found for the request",
-        "201": "Order rejected - contract or order invalid",
-        "202": "Order cancelled - unable to cancel",
+        "201": "Order rejected — check contract or order details",
+        "202": "Order cancelled by IBKR — see cancel reason in message",
         "309": "Max number of market depth requests reached",
         "316": "Market depth data halted - resubscribe required",
         "317": "Market depth data reset - deep book must be cleared",
