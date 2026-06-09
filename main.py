@@ -120,7 +120,7 @@ async def startup_event():
     # Step 1: Initialize database
     print("[Startup] Initializing database...")
     init_db()
-    print("[Startup] Database initialized ✓")
+    print("[Startup] Database initialized [OK]")
 
     # Step 2: Auto-enable IBKR if not already enabled
     try:
@@ -130,9 +130,9 @@ async def startup_event():
         if ibkr_enabled == "0":
             print("[Startup] Auto-enabling IBKR...")
             set_app_setting("ibkr_enabled", "1")
-            print("[Startup] IBKR enabled ✓")
+            print("[Startup] IBKR enabled [OK]")
         else:
-            print("[Startup] IBKR already enabled ✓")
+            print("[Startup] IBKR already enabled [OK]")
 
         # Log IBKR connection settings
         host = cfg.get("ibkr_host", "127.0.0.1")
@@ -148,7 +148,7 @@ async def startup_event():
     asyncio.create_task(ibkr_keepalive_loop())
     from ibkr.order_book_history import order_book_history_loop
     asyncio.create_task(order_book_history_loop())
-    print("[Startup] All systems ready ✓")
+    print("[Startup] All systems ready [OK]")
 
 
 # ============================================================================
