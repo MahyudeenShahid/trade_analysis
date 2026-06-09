@@ -371,7 +371,7 @@ def _to_utc_naive(dt: datetime) -> datetime:
 
 
 def _format_ibkr_end(dt: datetime) -> str:
-    return dt.strftime("%Y%m%d %H:%M:%S")
+    return dt.strftime("%Y%m%d %H:%M:%S") + " UTC"
 
 
 def _format_utc_z(dt: datetime) -> str:
@@ -469,7 +469,6 @@ async def ibkr_replay_window(
             bar_time_str = bar.date.isoformat() if hasattr(bar.date, 'isoformat') else str(bar.date)
             # Parse the bar time to filter to the exact window
             try:
-                from config.time_utils import parse_timestamp
                 bar_ts = parse_timestamp(bar_time_str)
                 if bar_ts is not None:
                     bar_ts_naive = _to_utc_naive(bar_ts)
@@ -485,6 +484,20 @@ async def ibkr_replay_window(
                 "close": bar.close,
                 "volume": bar.volume,
             })
+
+        # Fallback: if strict filtering emptied all bars but IBKR did return bars,
+        # return all of them (e.g. weekend/after-hours trade fallback).
+        if not result and bars:
+            for bar in bars:
+                bar_time_str = bar.date.isoformat() if hasattr(bar.date, 'isoformat') else str(bar.date)
+                result.append({
+                    "time": bar_time_str,
+                    "open": bar.open,
+                    "high": bar.high,
+                    "low": bar.low,
+                    "close": bar.close,
+                    "volume": bar.volume,
+                })
 
         return {
             "ok": True,
@@ -541,6 +554,20 @@ def _store_trade_replay(
     bars: list,
     order_book: Optional[dict],
 ) -> dict:
+    if not bars:
+        return {
+            "ok": True,
+            "saved": False,
+            "trade_ref_id": trade_ref_id,
+            "ticker": ticker,
+            "start": start_ts,
+            "end": end_ts,
+            "bar_size": bar_size,
+            "bars": [],
+            "order_book": None,
+            "created_at": datetime.utcnow().isoformat() + "Z",
+        }
+
     created_at = datetime.utcnow().isoformat() + "Z"
     bars_json = json.dumps(bars or [])
     order_book_json = json.dumps(order_book) if order_book is not None else None
