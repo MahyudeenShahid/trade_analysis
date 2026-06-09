@@ -466,8 +466,19 @@ async def ibkr_replay_window(
 
         result = []
         for bar in bars:
+            bar_time_str = bar.date.isoformat() if hasattr(bar.date, 'isoformat') else str(bar.date)
+            # Parse the bar time to filter to the exact window
+            try:
+                from config.time_utils import parse_timestamp
+                bar_ts = parse_timestamp(bar_time_str)
+                if bar_ts is not None:
+                    bar_ts_naive = _to_utc_naive(bar_ts)
+                    if bar_ts_naive < start_dt or bar_ts_naive > end_dt:
+                        continue  # skip bars outside the requested window
+            except Exception:
+                pass  # if parse fails, include the bar
             result.append({
-                "time": bar.date.isoformat() if hasattr(bar.date, 'isoformat') else str(bar.date),
+                "time": bar_time_str,
                 "open": bar.open,
                 "high": bar.high,
                 "low": bar.low,
@@ -638,3 +649,71 @@ async def ibkr_save_replay(payload: dict, _auth=Depends(require_api_key)):
         order_book=order_book,
     )
 
+
+async def _auto_save_trade_replay(
+    trade_ref_id: str,
+    ticker: str,
+    buy_time: Optional[str],
+    sell_time: Optional[str],
+    buffer_min: int = 5,
+    bar_size: str = "1 min",
+) -> None:
+    """Fire-and-forget: fetch bars around a completed trade and save to DB.
+
+    Called automatically by the order router after a SELL fill is confirmed.
+    Runs in the background — any failure is logged but never propagates.
+    """
+    try:
+        from ibkr.client import is_connected
+        if not is_connected():
+            logger.info("[IBKR] _auto_save_trade_replay: not connected, skipping auto-save")
+            return
+
+        # Check if we already have a saved replay for this trade
+        existing = _load_trade_replay(trade_ref_id)
+        if existing and existing.get("bars"):
+            logger.debug(f"[IBKR] Replay already saved for {trade_ref_id}, skipping auto-save")
+            return
+
+        logger.info(f"[IBKR] Auto-saving replay for trade {trade_ref_id} ({ticker})")
+
+        replay = await ibkr_replay_window(
+            ticker=ticker,
+            start=None,
+            end=None,
+            buy_time=buy_time,
+            sell_time=sell_time,
+            buffer_min=buffer_min,
+            bar_size=bar_size,
+            _auth=True,
+        )
+
+        bars = replay.get("bars") if isinstance(replay, dict) else []
+        start_ts = replay.get("start") if isinstance(replay, dict) else None
+        end_ts = replay.get("end") if isinstance(replay, dict) else None
+
+        if not bars:
+            logger.warning(f"[IBKR] Auto-save: no bars returned for trade {trade_ref_id}")
+            return
+
+        # Try to get order book data for the window
+        order_book = None
+        if start_ts and end_ts:
+            try:
+                from ibkr.order_book_history import get_order_book_history
+                order_book = get_order_book_history(ticker, start=start_ts, end=end_ts, max_points=2000)
+            except Exception:
+                order_book = None
+
+        _store_trade_replay(
+            trade_ref_id=trade_ref_id,
+            ticker=ticker,
+            start_ts=start_ts,
+            end_ts=end_ts,
+            bar_size=bar_size,
+            bars=bars,
+            order_book=order_book,
+        )
+        logger.info(f"[IBKR] Auto-saved {len(bars)} bars for trade {trade_ref_id}")
+    except Exception as e:
+        logger.warning(f"[IBKR] _auto_save_trade_replay failed (non-fatal): {e}")

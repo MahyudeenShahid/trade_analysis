@@ -456,6 +456,7 @@ async def handle_trade_event(trade_dict: dict, bot_row: dict, hwnd: int, get_cur
         # Calculate profit for SELL orders
         profit = None
         buy_order_id = None
+        buy_fill_ts = None
         if result.ok and direction.lower() == "sell" and result.fill_price:
             try:
                 from db.queries import get_last_buy_order
@@ -467,12 +468,29 @@ async def handle_trade_event(trade_dict: dict, bot_row: dict, hwnd: int, get_cur
                     matched_qty = max(0.0, min(float(qty), buy_qty))
                     profit = (sell_price - buy_price) * matched_qty
                     buy_order_id = last_buy.get("id")
+                    buy_fill_ts = last_buy.get("fill_ts") or last_buy.get("ts")
                     logger.info(
                         f"[IBKR] P&L calculated: ${profit:.2f} "
                         f"(qty={matched_qty:.4f}, buy @ {buy_price:.2f}, sell @ {sell_price:.2f})"
                     )
             except Exception as pnl_err:
                 logger.warning(f"[IBKR] P&L calculation failed (non-fatal): {pnl_err}")
+
+        # Auto-save chart bars to DB for offline replay
+        if result.ok and direction.lower() == "sell" and trade_ref_id and ticker:
+            try:
+                from api.routes.ibkr import _auto_save_trade_replay
+                asyncio.create_task(_auto_save_trade_replay(
+                    trade_ref_id=str(trade_ref_id),
+                    ticker=ticker,
+                    buy_time=buy_fill_ts,
+                    sell_time=result.fill_ts,
+                    buffer_min=5,
+                    bar_size="1 min",
+                ))
+                logger.info(f"[IBKR] Queued auto-save for trade replay: {trade_ref_id}")
+            except Exception as as_err:
+                logger.debug(f"[IBKR] Auto-save task creation failed (non-fatal): {as_err}")
 
         # Update DB row with result
         update_live_order_status(
