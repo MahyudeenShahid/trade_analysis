@@ -291,18 +291,53 @@ async def broadcaster_loop():
                                     continue
 
                                 signal_price = ibkr_price
-                                prev_price = ibkr_last_prices.get(ibkr_ticker)
-                                if prev_price is not None:
-                                    if ibkr_price > prev_price:
+                                ibkr_last_prices[ibkr_ticker] = ibkr_price
+
+                                rsi_bollinger_history = get_price_history(ibkr_ticker)
+
+                                # ── Slope-based trend detection ────────────────────────────────
+                                # Uses _compute_slope_pct() from Rule 13 — same math, same quality
+                                # as the Robinhood chart direction reader, but from live IBKR ticks.
+                                #
+                                # Configurable via app settings (optional):
+                                #   ibkr_trend_lookback       int   — how many price ticks to use
+                                #                                      (default: 5)
+                                #   ibkr_trend_threshold_pct  float — minimum slope to count as
+                                #                                      directional (default: 0.0003
+                                #                                      = 0.03% per lookback window)
+                                #
+                                # trend = 'up'   if slope > +threshold
+                                # trend = 'down' if slope < -threshold
+                                # trend = ''     if flat / not enough data yet
+                                # ─────────────────────────────────────────────────────────────────
+                                try:
+                                    from trading.rule13 import _compute_slope_pct
+                                    _trend_lookback   = int(cfg.get('ibkr_trend_lookback') or 5)
+                                    _trend_threshold  = float(cfg.get('ibkr_trend_threshold_pct') or 0.0003)
+                                    _prices           = rsi_bollinger_history or []
+                                    _slope            = _compute_slope_pct(_prices, _trend_lookback)
+                                    if _slope is None:
+                                        signal_trend = ''           # not enough history yet
+                                    elif _slope > _trend_threshold:
                                         signal_trend = 'up'
-                                    elif ibkr_price < prev_price:
+                                    elif _slope < -_trend_threshold:
                                         signal_trend = 'down'
                                     else:
+                                        signal_trend = ''           # flat — no directional signal
+                                except Exception:
+                                    # Fallback: single-tick delta (original behaviour)
+                                    _prev = ibkr_last_prices.get(ibkr_ticker)
+                                    if _prev is not None:
+                                        if ibkr_price > _prev:
+                                            signal_trend = 'up'
+                                        elif ibkr_price < _prev:
+                                            signal_trend = 'down'
+                                        else:
+                                            signal_trend = ''
+                                    else:
                                         signal_trend = ''
-                                else:
-                                    signal_trend = ''
-                                ibkr_last_prices[ibkr_ticker] = ibkr_price
-                                rsi_bollinger_history = get_price_history(ibkr_ticker)
+                                # ─────────────────────────────────────────────────────────────────
+
                                 try:
                                     lookback_s = int(rule_12_lookback_seconds) if rule_12_lookback_seconds is not None else 10
                                 except Exception:
@@ -323,6 +358,7 @@ async def broadcaster_loop():
                                         rsi_bollinger_avg_volume = sum(vols) / len(vols) if vols else None
                                 except Exception:
                                     rsi_bollinger_avg_volume = None
+
 
                             if signal_price is None:
                                 continue
@@ -572,7 +608,7 @@ async def broadcaster_loop():
             await manager.broadcast(json.dumps(payload))
         except Exception as e:
             print("Broadcaster loop error:", e)
-        await asyncio.sleep(1)
+        await asyncio.sleep(0.4)  # 5× faster — signals fire within 200ms (was 1s)
 
 
 __all__ = ["broadcaster_loop"]
