@@ -128,6 +128,7 @@ class TradeSimulator:
                   rsi_bollinger_trailing_stop_enabled: bool = False,
                   rsi_bollinger_trailing_stop_pct: Optional[float] = None,
                   rsi_bollinger_rsi_slope_enabled: bool = False,
+                  rsi_bollinger_min_reentry_seconds: Optional[int] = None,
                   # Rule 11: momentum tick breakout
                   rule_11_enabled: bool = False,
                   rule_11_price_jump: Optional[float] = None,
@@ -290,6 +291,7 @@ class TradeSimulator:
                         rsi_bollinger_trailing_stop_enabled,
                         rsi_bollinger_trailing_stop_pct,
                         rsi_bollinger_rsi_slope_enabled,
+                        rsi_bollinger_min_reentry_seconds,
                         buy_cb,
                         sell_cb,
                     ):

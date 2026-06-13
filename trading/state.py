@@ -34,6 +34,7 @@ class TickerState:
         self.rsi_bollinger_waiting_bounce: bool = False
         self.rsi_bollinger_trigger_price: Optional[float] = None
         self.rsi_bollinger_last_loss_time: Optional[datetime] = None
+        self.rsi_bollinger_last_buy_time: Optional[datetime] = None  # tracks last buy to enforce min re-entry interval
         # Daily loss tracking (for per-bot daily caps)
         self.daily_loss_total: float = 0.0
         self.daily_loss_count: int = 0

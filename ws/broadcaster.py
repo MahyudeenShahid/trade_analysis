@@ -219,6 +219,7 @@ async def broadcaster_loop():
                                 rsi_bollinger_trailing_stop_enabled = bot.get('rsi_bollinger_trailing_stop_enabled')
                                 rsi_bollinger_trailing_stop_pct = bot.get('rsi_bollinger_trailing_stop_pct')
                                 rsi_bollinger_rsi_slope_enabled = bot.get('rsi_bollinger_rsi_slope_enabled')
+                                rsi_bollinger_min_reentry_seconds = bot.get('rsi_bollinger_min_reentry_seconds')
                                 # Rule 11 settings
                                 rule_11_enabled = bool(bot.get('rule_11_enabled'))
                                 rule_11_price_jump = bot.get('rule_11_price_jump')
@@ -396,6 +397,7 @@ async def broadcaster_loop():
                                     rsi_bollinger_trailing_stop_enabled=rsi_bollinger_trailing_stop_enabled,
                                     rsi_bollinger_trailing_stop_pct=rsi_bollinger_trailing_stop_pct,
                                     rsi_bollinger_rsi_slope_enabled=rsi_bollinger_rsi_slope_enabled,
+                                    rsi_bollinger_min_reentry_seconds=rsi_bollinger_min_reentry_seconds,
                                     rule_11_enabled=rule_11_enabled if _ibkr_mode else False,
                                     rule_11_price_jump=rule_11_price_jump,
                                     rule_11_window_seconds=rule_11_window_seconds,

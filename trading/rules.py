@@ -426,6 +426,7 @@ def maybe_rsi_bollinger_trade(state: 'TickerState', current_price: float,
                               trailing_stop_enabled: Optional[bool] = None,
                               trailing_stop_pct: Optional[float] = None,
                               rsi_slope_enabled: Optional[bool] = None,
+                              min_reentry_seconds: Optional[int] = None,
                               buy_callback=None, sell_callback=None) -> bool:
     """
     RSI + Bollinger Reversal:
@@ -573,6 +574,17 @@ def maybe_rsi_bollinger_trade(state: 'TickerState', current_price: float,
     # Flat state: reset trailing peak
     state.rsi_bollinger_peak_price = None
 
+    # Minimum re-entry interval: block new buys within N seconds of the last buy
+    try:
+        min_s = int(min_reentry_seconds) if min_reentry_seconds is not None else 0
+        if min_s > 0 and getattr(state, 'rsi_bollinger_last_buy_time', None) is not None:
+            elapsed = (datetime.utcnow() - state.rsi_bollinger_last_buy_time).total_seconds()
+            if elapsed < min_s:
+                _log_rsi_bb_block(state, "min_reentry", f"elapsed={elapsed:.1f}s < {min_s}s")
+                return True
+    except Exception:
+        pass
+
     history = price_history if isinstance(price_history, list) else []
     required = max(rsi_len + 1, bb_len)
     if len(history) < required:
@@ -643,6 +655,7 @@ def maybe_rsi_bollinger_trade(state: 'TickerState', current_price: float,
                         setattr(state, "rsi_bollinger_last_block_reason", None)
                     except Exception:
                         pass
+                    state.rsi_bollinger_last_buy_time = datetime.utcnow()
                     buy_callback(current_price)
                 else:
                     _log_rsi_bb_block(state, "bounce_wait", f"price={float(current_price):.4f} < target={bounce_target:.4f}")
@@ -661,6 +674,7 @@ def maybe_rsi_bollinger_trade(state: 'TickerState', current_price: float,
             setattr(state, "rsi_bollinger_last_block_reason", None)
         except Exception:
             pass
+        state.rsi_bollinger_last_buy_time = datetime.utcnow()
         buy_callback(current_price)
     return True
 
