@@ -36,7 +36,8 @@ async def broadcaster_loop():
     )
 
     ibkr_last_prices = {}
-    
+    # Per-ticker live state for frontend sparkline: {ticker: {prices, trend, last_signal}}
+    ibkr_live_state: dict = {}
     while True:
         try:
             signal_source = "screenshot"
@@ -360,6 +361,22 @@ async def broadcaster_loop():
                                     rsi_bollinger_avg_volume = None
 
 
+                                # ── Record live state for frontend sparkline ──────────────────
+                                # Captures last 60 price ticks + computed slope trend so the
+                                # preview panel can draw a live sparkline and show the direction.
+                                try:
+                                    _tick_prices = list(rsi_bollinger_history or [])[-60:]
+                                    ibkr_live_state[ibkr_ticker] = {
+                                        'ticker': ibkr_ticker,
+                                        'prices': _tick_prices,
+                                        'trend': signal_trend,          # 'up' | 'down' | ''
+                                        'price': signal_price,
+                                        'last_signal': ibkr_live_state.get(ibkr_ticker, {}).get('last_signal'),
+                                    }
+                                except Exception:
+                                    pass
+                                # ─────────────────────────────────────────────────────────────
+
                             if signal_price is None:
                                 continue
 
@@ -485,6 +502,18 @@ async def broadcaster_loop():
                                             if bot_id and ev.get('bot_id') != bot_id:
                                                 continue
                                             direction = ev.get('direction')
+                                            # Track last signal for frontend sparkline badge
+                                            try:
+                                                _ev_ticker = str(ev.get('ticker') or bot_ticker or '').upper()
+                                                if _ev_ticker and direction in ('buy', 'sell'):
+                                                    if _ev_ticker in ibkr_live_state:
+                                                        ibkr_live_state[_ev_ticker]['last_signal'] = {
+                                                            'direction': direction,
+                                                            'price': ev.get('price'),
+                                                            'ts': ev.get('ts'),
+                                                        }
+                                            except Exception:
+                                                pass
                                             # Local screenshot/trade-recorder handler should never block
                                             # IBKR dispatch. Keep it isolated and best-effort.
                                             if hasattr(svc, 'handle_trade_event'):
@@ -587,6 +616,7 @@ async def broadcaster_loop():
                 'trade_summary': trader.summary(),
                 'new_trades': new_trades,
                 'signal_source': signal_source,
+                'ibkr_live_state': ibkr_live_state,   # per-ticker sparkline data
             }
 
             # IBKR live trading status (non-blocking — all reads from in-memory or DB)
