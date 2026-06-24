@@ -744,3 +744,102 @@ async def _auto_save_trade_replay(
         logger.info(f"[IBKR] Auto-saved {len(bars)} bars for trade {trade_ref_id}")
     except Exception as e:
         logger.warning(f"[IBKR] _auto_save_trade_replay failed (non-fatal): {e}")
+
+
+# ---------------------------------------------------------------------------
+# Rule 14 — History Graph Trend Auto-Trader
+# ---------------------------------------------------------------------------
+
+@router.post("/rule14/configure")
+async def rule14_configure(payload: dict, _auth=Depends(require_api_key)):
+    """
+    Enable or disable Rule 14 for a bot, and set its parameters.
+
+    Body:
+      hwnd          int   — bot window handle
+      enabled       bool  — turn on/off
+      qty           int   — shares per order (default 1)
+      stop_loss_pct float — stop-loss %, 0 = disabled (default 0)
+      cooldown_secs float — seconds between trades, 0 = none (default 0)
+    """
+    from trading.rule14 import configure_r14, r14_state_for_frontend
+    hwnd = int(payload.get('hwnd') or 0)
+    if hwnd <= 0:
+        raise HTTPException(status_code=400, detail='hwnd required')
+    configure_r14(
+        hwnd,
+        enabled=bool(payload.get('enabled', False)),
+        qty=int(payload.get('qty', 1)),
+        stop_loss_pct=float(payload.get('stop_loss_pct', 0.0)),
+        cooldown_secs=float(payload.get('cooldown_secs', 0.0)),
+    )
+    return {'ok': True, 'state': r14_state_for_frontend(hwnd)}
+
+
+@router.get("/rule14/state/{hwnd}")
+async def rule14_state(hwnd: int, _auth=Depends(require_api_key)):
+    """Return current R14 runtime state for a bot (position, trend, P&L, etc.)."""
+    from trading.rule14 import r14_state_for_frontend
+    return r14_state_for_frontend(hwnd)
+
+
+@router.post("/rule14/manual_order")
+async def rule14_manual_order(payload: dict, _auth=Depends(require_api_key)):
+    """
+    Place an immediate manual buy or sell for a bot via R14 (bypasses trend check).
+    Used for the [SELL NOW] / [BUY NOW] override buttons.
+
+    Body:
+      hwnd       int
+      direction  'buy' | 'sell'
+      ticker     str
+    """
+    from trading.rule14 import get_r14_state
+    from ibkr.order_router import handle_trade_event
+    import time
+
+    hwnd = int(payload.get('hwnd') or 0)
+    direction = str(payload.get('direction') or '').lower()
+    ticker = str(payload.get('ticker') or '').strip().upper()
+
+    if hwnd <= 0 or direction not in ('buy', 'sell') or not ticker:
+        raise HTTPException(status_code=400, detail='hwnd, direction, and ticker required')
+
+    s = get_r14_state(hwnd)
+
+    # Build a synthetic trade event and dispatch through the normal IBKR order path
+    from ibkr.order_book import get_mid_price
+    price = get_mid_price(ticker) or payload.get('price')
+
+    trade_dict = {
+        'direction': direction,
+        'ticker': ticker,
+        'price': price,
+        'ts': str(time.time()),
+        'bot_id': f'rule14_manual_{hwnd}',
+        'rule': 'R14_MANUAL',
+    }
+
+    # Build a minimal bot_row using R14 qty
+    bot_row = {
+        'live_trading_enabled': True,
+        'ticker': ticker,
+        'qty': s.qty,
+        'order_size': s.qty,
+        'buy_order_type': 'limit',
+        'sell_order_type': 'limit',
+    }
+
+    asyncio.create_task(handle_trade_event(trade_dict, bot_row, hwnd))
+
+    # Update state immediately
+    if direction == 'buy':
+        s.position_price = float(price) if price else None
+        s.position_ts = time.time()
+        s.last_signal = 'buy'
+    else:
+        s.position_price = None
+        s.last_sell_ts = time.time()
+        s.last_signal = 'sell'
+
+    return {'ok': True, 'direction': direction, 'ticker': ticker, 'price': price}
