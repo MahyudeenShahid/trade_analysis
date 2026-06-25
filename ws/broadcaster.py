@@ -393,14 +393,23 @@ async def broadcaster_loop():
                                     if _r14_s.enabled:
                                         # Fetch last 30 order-book history points (fast endpoint)
                                         import time as _time
+                                        from datetime import datetime as _datetime, timezone as _timezone
                                         _r14_end = _time.time()
                                         _r14_start = _r14_end - 60  # 60 second window
-                                        _r14_history = get_order_book_history(
+
+                                        # Convert unix float timestamps to UTC ISO strings
+                                        _r14_end_dt = _datetime.fromtimestamp(_r14_end, tz=_timezone.utc)
+                                        _r14_start_dt = _datetime.fromtimestamp(_r14_start, tz=_timezone.utc)
+                                        _r14_end_str = _r14_end_dt.isoformat().replace("+00:00", "Z")
+                                        _r14_start_str = _r14_start_dt.isoformat().replace("+00:00", "Z")
+
+                                        _r14_res = get_order_book_history(
                                             ibkr_ticker,
-                                            start=_r14_start,
-                                            end=_r14_end,
+                                            start=_r14_start_str,
+                                            end=_r14_end_str,
                                             max_points=30,
-                                        ) or []
+                                        ) or {}
+                                        _r14_history = _r14_res.get('points') or []
                                         _r14_sig = maybe_rule14_signal(int(hwnd), _r14_history)
                                         # Add R14 state to the ibkr_live_state broadcast
                                         if ibkr_ticker in ibkr_live_state:
