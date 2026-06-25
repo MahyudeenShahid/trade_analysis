@@ -3,8 +3,8 @@ Rule 14 — History Graph Trend Auto-Trader
 
 Logic:
   - Watches the OrderBook History chart (mid-price of best bid/ask snapshots).
-  - Any upward slope  → BUY  (long entry)
-  - Any downward slope → SELL (close long)
+  - Slope > +THRESHOLD % over the lookback window  → BUY  (long entry)
+  - Slope < -THRESHOLD % over the lookback window  → SELL (close long)
   - Stop-loss % fires independently of trend check.
   - Long-only (no shorting).
   - Overrides all other rules when enabled on a bot.
@@ -22,6 +22,10 @@ from typing import Optional
 
 logger = logging.getLogger(__name__)
 
+# Minimum slope magnitude to trigger a signal (in fractional terms).
+# 0.0003 == 0.03%.  Prevents firing on micro-noise.
+DEFAULT_SLOPE_THRESHOLD = 0.0003
+
 
 # ─── Per-ticker runtime state ────────────────────────────────────────────────
 
@@ -34,10 +38,14 @@ class Rule14State:
     qty: int = 1                      # shares per order
     stop_loss_pct: float = 0.0        # 0 = disabled, e.g. 0.5 = 0.5%
     cooldown_secs: float = 0.0        # 0 = no cooldown
+    slope_threshold: float = DEFAULT_SLOPE_THRESHOLD  # min slope to trigger
 
     # Position tracking
-    position_price: Optional[float] = None   # entry price, None = flat
+    position_price: Optional[float] = None   # signal price at entry, None = flat
     position_ts: float = 0.0                 # unix time of entry
+    entry_limit_price: Optional[float] = None  # limit price sent to IBKR
+    entry_fill_price: Optional[float] = None   # actual fill price from IBKR
+    entry_fill_status: str = ''               # 'pending' | 'filled' | 'failed'
 
     # Last signal sent (prevents duplicate orders)
     last_signal: str = ''             # 'buy' | 'sell' | ''
@@ -56,6 +64,17 @@ class Rule14State:
     trade_log: list = field(default_factory=list)
     _trade_log_max: int = 200  # keep last 200 trades
 
+    # ─── Order event log ─────────────────────────────────────────────────────
+    # Tracks the full lifecycle of each order:
+    # {'event': 'order_placed'|'order_filled'|'order_failed', 'direction': str,
+    #  'signal_price': float, 'limit_price': float|None, 'fill_price': float|None,
+    #  'slippage': float|None, 'reason': str, 'ts': float}
+    order_events: list = field(default_factory=list)
+    _order_events_max: int = 100
+
+    # Current status phrase for display
+    status_text: str = 'Idle'
+
 
 # Global registry: hwnd → Rule14State
 _r14_states: dict[int, Rule14State] = {}
@@ -69,36 +88,131 @@ def get_r14_state(hwnd: int) -> Rule14State:
 
 
 def configure_r14(hwnd: int, *, enabled: bool, qty: int = 1,
-                  stop_loss_pct: float = 0.0, cooldown_secs: float = 0.0) -> Rule14State:
+                  stop_loss_pct: float = 0.0, cooldown_secs: float = 0.0,
+                  slope_threshold: float = DEFAULT_SLOPE_THRESHOLD) -> Rule14State:
     """Update config for this bot. Call from API route."""
     s = get_r14_state(hwnd)
     s.enabled = enabled
     s.qty = max(1, int(qty))
     s.stop_loss_pct = max(0.0, float(stop_loss_pct))
     s.cooldown_secs = max(0.0, float(cooldown_secs))
+    s.slope_threshold = max(0.0, float(slope_threshold))
+    if not enabled:
+        s.status_text = 'Disabled'
     return s
+
+
+def _append_order_event(s: Rule14State, event: dict) -> None:
+    """Append to order_events, trimming if over max."""
+    s.order_events.append(event)
+    if len(s.order_events) > s._order_events_max:
+        s.order_events = s.order_events[-s._order_events_max:]
+
+
+def record_order_placed(hwnd: int, direction: str, signal_price: float,
+                        limit_price: Optional[float]) -> None:
+    """Called by broadcaster immediately after dispatching the IBKR order."""
+    s = get_r14_state(hwnd)
+    now = time.time()
+    lp_str = f'${limit_price:.2f}' if limit_price is not None else 'MKT'
+    _append_order_event(s, {
+        'event': 'order_placed',
+        'direction': direction,
+        'signal_price': signal_price,
+        'limit_price': limit_price,
+        'fill_price': None,
+        'slippage': None,
+        'reason': f'Order sent to IBKR — limit {lp_str}',
+        'ts': now,
+    })
+    if direction == 'buy':
+        s.entry_limit_price = limit_price
+        s.entry_fill_status = 'pending'
+        s.status_text = f'⏳ BUY order placed @ {lp_str} — awaiting fill…'
+    else:
+        s.status_text = f'⏳ SELL order placed @ {lp_str} — awaiting fill…'
+
+
+def record_order_fill(hwnd: int, direction: str, signal_price: float,
+                      limit_price: Optional[float], fill_price: Optional[float],
+                      ok: bool, error_msg: str = '') -> None:
+    """Called by broadcaster after IBKR order completes (filled or failed)."""
+    s = get_r14_state(hwnd)
+    now = time.time()
+    slippage = None
+    if ok and fill_price is not None and signal_price is not None:
+        slippage = round(fill_price - signal_price, 4)
+
+    lp_str = f'${limit_price:.2f}' if limit_price is not None else 'MKT'
+    fp_str = f'${fill_price:.2f}' if fill_price is not None else '—'
+
+    if ok:
+        slip_str = f'{slippage:+.2f}' if slippage is not None else ''
+        reason = f'Filled @ {fp_str} (slip {slip_str})'
+        _append_order_event(s, {
+            'event': 'order_filled',
+            'direction': direction,
+            'signal_price': signal_price,
+            'limit_price': limit_price,
+            'fill_price': fill_price,
+            'slippage': slippage,
+            'reason': reason,
+            'ts': now,
+        })
+        if direction == 'buy':
+            s.entry_fill_price = fill_price
+            s.entry_fill_status = 'filled'
+            s.status_text = f'✅ BOUGHT @ {fp_str} (slip {slip_str}) — holding'
+        else:
+            s.status_text = f'✅ SOLD @ {fp_str} (slip {slip_str}) — flat'
+    else:
+        _append_order_event(s, {
+            'event': 'order_failed',
+            'direction': direction,
+            'signal_price': signal_price,
+            'limit_price': limit_price,
+            'fill_price': None,
+            'slippage': None,
+            'reason': f'FAILED: {error_msg or "unknown"}',
+            'ts': now,
+        })
+        if direction == 'buy':
+            s.entry_fill_status = 'failed'
+            s.status_text = f'❌ BUY FAILED — {error_msg or "unknown"}'
+        else:
+            s.status_text = f'❌ SELL FAILED — {error_msg or "unknown"}'
 
 
 def r14_state_for_frontend(hwnd: int) -> dict:
     """Return a JSON-serialisable snapshot for the WS broadcast."""
     s = get_r14_state(hwnd)
     pnl = None
-    if s.position_price is not None and s.last_mid_price is not None:
-        pnl = round((s.last_mid_price - s.position_price) * s.qty, 4)
+    pnl_pct = None
+    ref_price = s.entry_fill_price or s.position_price
+    if ref_price is not None and s.last_mid_price is not None:
+        pnl = round((s.last_mid_price - ref_price) * s.qty, 4)
+        pnl_pct = round(((s.last_mid_price - ref_price) / ref_price) * 100, 4) if ref_price > 0 else None
     return {
         'enabled': s.enabled,
         'qty': s.qty,
         'stop_loss_pct': s.stop_loss_pct,
         'cooldown_secs': s.cooldown_secs,
+        'slope_threshold': round(s.slope_threshold * 100, 4),  # in % for display
         'position_price': s.position_price,
+        'entry_fill_price': s.entry_fill_price,
+        'entry_fill_status': s.entry_fill_status,
         'pnl': pnl,
+        'pnl_pct': pnl_pct,
         'last_trend': s.last_trend,
         'last_slope_pct': round(s.last_slope_pct * 100, 4),  # in % for display
         'last_mid_price': s.last_mid_price,
         'last_signal': s.last_signal,
         'last_signal_ts': s.last_signal_ts,
+        'status_text': s.status_text,
         # Send last 50 trade events so the UI can place markers on the blue graph
         'trade_log': s.trade_log[-50:],
+        # Send last 30 order events for the status log panel
+        'order_events': s.order_events[-30:],
     }
 
 
@@ -107,7 +221,7 @@ def r14_state_for_frontend(hwnd: int) -> dict:
 def _slope_pct(mids: list[float]) -> Optional[float]:
     """
     Fraction change from first to last point.
-    Any slope — no threshold. Returns None if insufficient data.
+    Returns None if insufficient data.
     """
     vals = [v for v in mids if isinstance(v, (int, float)) and v > 0]
     if len(vals) < 2:
@@ -164,8 +278,15 @@ def maybe_rule14_signal(
 
     s.last_slope_pct = slope
 
-    # Determine raw trend direction (any slope)
-    trend = 'up' if slope > 0 else 'down'
+    threshold = s.slope_threshold  # minimum slope magnitude to act on
+    # Determine trend direction with threshold guard
+    if slope > threshold:
+        trend = 'up'
+    elif slope < -threshold:
+        trend = 'down'
+    else:
+        trend = ''  # flat / noise — do nothing
+
     s.last_trend = trend
 
     now = time.time()
@@ -178,15 +299,18 @@ def maybe_rule14_signal(
         if s.stop_loss_pct > 0:
             stop_floor = entry * (1.0 - s.stop_loss_pct / 100.0)
             if cur_mid <= stop_floor:
-                reason = f'stop-loss @ floor {stop_floor:.4f}'
+                reason = f'stop-loss @ floor ${stop_floor:.4f}'
                 logger.info(
                     f"[R14] hwnd={hwnd} STOP-LOSS triggered at {cur_mid:.4f} "
                     f"(entry={entry:.4f}, floor={stop_floor:.4f})"
                 )
                 s.position_price = None
+                s.entry_fill_price = None
+                s.entry_fill_status = ''
                 s.last_sell_ts = now
                 s.last_signal = 'sell'
                 s.last_signal_ts = now
+                s.status_text = f'🛑 STOP-LOSS triggered @ ${cur_mid:.2f}'
                 s.trade_log.append({'direction': 'sell', 'price': cur_mid, 'ts': now, 'reason': reason})
                 if len(s.trade_log) > s._trade_log_max:
                     s.trade_log = s.trade_log[-s._trade_log_max:]
@@ -200,6 +324,8 @@ def maybe_rule14_signal(
                 f"(slope={slope*100:.4f}%)"
             )
             s.position_price = None
+            s.entry_fill_price = None
+            s.entry_fill_status = ''
             s.last_sell_ts = now
             s.last_signal = 'sell'
             s.last_signal_ts = now
@@ -208,6 +334,13 @@ def maybe_rule14_signal(
                 s.trade_log = s.trade_log[-s._trade_log_max:]
             return 'sell'
 
+        # Still holding, show live P&L in status
+        ref = s.entry_fill_price or entry
+        live_pnl = (cur_mid - ref) * s.qty
+        s.status_text = (
+            f'📈 Holding {s.qty}sh @ ${ref:.2f} — '
+            f'P&L: {"+" if live_pnl >= 0 else ""}{live_pnl:.2f} (cur ${cur_mid:.2f})'
+        )
         return None  # holding, trend still UP
 
     # ── ENTRY logic ───────────────────────────────────────────────────────────
@@ -215,6 +348,8 @@ def maybe_rule14_signal(
     if s.cooldown_secs > 0 and s.last_sell_ts > 0:
         elapsed = now - s.last_sell_ts
         if elapsed < s.cooldown_secs:
+            remaining = s.cooldown_secs - elapsed
+            s.status_text = f'⏱ Cooldown — {remaining:.0f}s remaining'
             return None
 
     if trend == 'up':
@@ -225,12 +360,23 @@ def maybe_rule14_signal(
         )
         s.position_price = cur_mid
         s.position_ts = now
+        s.entry_fill_price = None
+        s.entry_fill_status = ''
         s.last_signal = 'buy'
         s.last_signal_ts = now
+        s.status_text = f'🟡 BUY signal @ ${cur_mid:.2f} — sending order…'
         s.trade_log.append({'direction': 'buy', 'price': cur_mid, 'ts': now, 'reason': reason})
         if len(s.trade_log) > s._trade_log_max:
             s.trade_log = s.trade_log[-s._trade_log_max:]
         return 'buy'
+
+    if trend == '':
+        s.status_text = (
+            f'💤 Waiting — slope {slope*100:+.4f}% '
+            f'(need ±{threshold*100:.3f}%)'
+        )
+    elif trend == 'down':
+        s.status_text = f'⬇ Trend down — flat, no position'
 
     return None
 
@@ -240,5 +386,7 @@ __all__ = [
     'get_r14_state',
     'configure_r14',
     'r14_state_for_frontend',
+    'record_order_placed',
+    'record_order_fill',
     'maybe_rule14_signal',
 ]

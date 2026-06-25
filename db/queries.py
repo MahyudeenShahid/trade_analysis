@@ -1118,6 +1118,20 @@ def get_last_buy_order(hwnd: int, ticker: str) -> dict:
     return rows[0] if rows else None
 
 
+def get_last_order_for_hwnd_ticker(hwnd: int, ticker: str) -> dict:
+    """Get the most recent live_order row for a bot/ticker (any direction, any status).
+    Used by R14 to read fill price and status after an order completes.
+    """
+    rows = query_records(
+        """SELECT * FROM live_orders
+             WHERE hwnd = ? AND ticker = ?
+             ORDER BY ts DESC
+             LIMIT 1""",
+        (int(hwnd), ticker),
+    )
+    return rows[0] if rows else None
+
+
 __all__ = [
     "query_records",
     "get_latest_record",
@@ -1132,4 +1146,5 @@ __all__ = [
     "get_live_orders",
     "count_live_orders",
     "get_last_buy_order",
+    "get_last_order_for_hwnd_ticker",
 ]

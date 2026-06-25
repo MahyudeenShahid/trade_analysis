@@ -756,22 +756,25 @@ async def rule14_configure(payload: dict, _auth=Depends(require_api_key)):
     Enable or disable Rule 14 for a bot, and set its parameters.
 
     Body:
-      hwnd          int   — bot window handle
-      enabled       bool  — turn on/off
-      qty           int   — shares per order (default 1)
-      stop_loss_pct float — stop-loss %, 0 = disabled (default 0)
-      cooldown_secs float — seconds between trades, 0 = none (default 0)
+      hwnd             int   — bot window handle
+      enabled          bool  — turn on/off
+      qty              int   — shares per order (default 1)
+      stop_loss_pct    float — stop-loss %, 0 = disabled (default 0)
+      cooldown_secs    float — seconds between trades, 0 = none (default 0)
+      slope_threshold  float — min slope % to trigger (default 0.03)
     """
-    from trading.rule14 import configure_r14, r14_state_for_frontend
+    from trading.rule14 import configure_r14, r14_state_for_frontend, DEFAULT_SLOPE_THRESHOLD
     hwnd = int(payload.get('hwnd') or 0)
     if hwnd <= 0:
         raise HTTPException(status_code=400, detail='hwnd required')
+    slope_threshold_pct = float(payload.get('slope_threshold', DEFAULT_SLOPE_THRESHOLD * 100))
     configure_r14(
         hwnd,
         enabled=bool(payload.get('enabled', False)),
         qty=int(payload.get('qty', 1)),
         stop_loss_pct=float(payload.get('stop_loss_pct', 0.0)),
         cooldown_secs=float(payload.get('cooldown_secs', 0.0)),
+        slope_threshold=slope_threshold_pct / 100.0,  # convert % to fraction
     )
     return {'ok': True, 'state': r14_state_for_frontend(hwnd)}
 
