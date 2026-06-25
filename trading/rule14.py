@@ -51,6 +51,11 @@ class Rule14State:
     last_slope_pct: float = 0.0
     last_mid_price: Optional[float] = None
 
+    # Rolling log of executed trades (for UI markers on the blue graph)
+    # Each entry: {'direction': 'buy'|'sell', 'price': float, 'ts': float, 'reason': str}
+    trade_log: list = field(default_factory=list)
+    _trade_log_max: int = 200  # keep last 200 trades
+
 
 # Global registry: hwnd → Rule14State
 _r14_states: dict[int, Rule14State] = {}
@@ -91,6 +96,9 @@ def r14_state_for_frontend(hwnd: int) -> dict:
         'last_slope_pct': round(s.last_slope_pct * 100, 4),  # in % for display
         'last_mid_price': s.last_mid_price,
         'last_signal': s.last_signal,
+        'last_signal_ts': s.last_signal_ts,
+        # Send last 50 trade events so the UI can place markers on the blue graph
+        'trade_log': s.trade_log[-50:],
     }
 
 
@@ -170,6 +178,7 @@ def maybe_rule14_signal(
         if s.stop_loss_pct > 0:
             stop_floor = entry * (1.0 - s.stop_loss_pct / 100.0)
             if cur_mid <= stop_floor:
+                reason = f'stop-loss @ floor {stop_floor:.4f}'
                 logger.info(
                     f"[R14] hwnd={hwnd} STOP-LOSS triggered at {cur_mid:.4f} "
                     f"(entry={entry:.4f}, floor={stop_floor:.4f})"
@@ -178,10 +187,14 @@ def maybe_rule14_signal(
                 s.last_sell_ts = now
                 s.last_signal = 'sell'
                 s.last_signal_ts = now
+                s.trade_log.append({'direction': 'sell', 'price': cur_mid, 'ts': now, 'reason': reason})
+                if len(s.trade_log) > s._trade_log_max:
+                    s.trade_log = s.trade_log[-s._trade_log_max:]
                 return 'sell'
 
         # Trend reversed to DOWN → close position
         if trend == 'down':
+            reason = f'trend DOWN slope={slope*100:.4f}%'
             logger.info(
                 f"[R14] hwnd={hwnd} SELL (trend DOWN) at {cur_mid:.4f} "
                 f"(slope={slope*100:.4f}%)"
@@ -190,6 +203,9 @@ def maybe_rule14_signal(
             s.last_sell_ts = now
             s.last_signal = 'sell'
             s.last_signal_ts = now
+            s.trade_log.append({'direction': 'sell', 'price': cur_mid, 'ts': now, 'reason': reason})
+            if len(s.trade_log) > s._trade_log_max:
+                s.trade_log = s.trade_log[-s._trade_log_max:]
             return 'sell'
 
         return None  # holding, trend still UP
@@ -202,6 +218,7 @@ def maybe_rule14_signal(
             return None
 
     if trend == 'up':
+        reason = f'trend UP slope={slope*100:.4f}%'
         logger.info(
             f"[R14] hwnd={hwnd} BUY (trend UP) at {cur_mid:.4f} "
             f"(slope={slope*100:.4f}%)"
@@ -210,6 +227,9 @@ def maybe_rule14_signal(
         s.position_ts = now
         s.last_signal = 'buy'
         s.last_signal_ts = now
+        s.trade_log.append({'direction': 'buy', 'price': cur_mid, 'ts': now, 'reason': reason})
+        if len(s.trade_log) > s._trade_log_max:
+            s.trade_log = s.trade_log[-s._trade_log_max:]
         return 'buy'
 
     return None
