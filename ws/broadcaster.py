@@ -377,121 +377,119 @@ async def broadcaster_loop():
                                     pass
                                 # ─────────────────────────────────────────────────────────────
 
-                                # ── Rule 14: History Graph Trend Auto-Trader ──────────────────
-                                # When R14 is enabled it overrides all other rules for this tick.
-                                # Uses the OrderBook history endpoint (same data as the blue chart).
-                                try:
-                                    from trading.rule14 import (
-                                        get_r14_state,
-                                        maybe_rule14_signal,
-                                        r14_state_for_frontend,
-                                        record_order_placed,
-                                        record_order_fill,
-                                    )
-                                    from ibkr.order_book_history import get_order_book_history
-                                    _r14_s = get_r14_state(int(hwnd))
-                                    if _r14_s.enabled:
-                                        # Fetch last 30 order-book history points (fast endpoint)
-                                        import time as _time
-                                        from datetime import datetime as _datetime, timezone as _timezone
-                                        _r14_end = _time.time()
-                                        _r14_start = _r14_end - 60  # 60 second window
+                                # (R14 handled below — after ibkr block — so it works in all signal modes)
 
-                                        # Convert unix float timestamps to UTC ISO strings
-                                        _r14_end_dt = _datetime.fromtimestamp(_r14_end, tz=_timezone.utc)
-                                        _r14_start_dt = _datetime.fromtimestamp(_r14_start, tz=_timezone.utc)
-                                        _r14_end_str = _r14_end_dt.isoformat().replace("+00:00", "Z")
-                                        _r14_start_str = _r14_start_dt.isoformat().replace("+00:00", "Z")
+                            # ── Rule 14: History Graph Trend Auto-Trader ──────────────────
+                            # Runs in BOTH screenshot and ibkr modes — reads from the order-book
+                            # history DB which is captured independently of signal_source.
+                            try:
+                                from trading.rule14 import (
+                                    get_r14_state as _get_r14,
+                                    maybe_rule14_signal as _maybe_r14,
+                                    r14_state_for_frontend as _r14_fe,
+                                    record_order_placed as _r14_record_placed,
+                                    record_order_fill as _r14_record_fill,
+                                )
+                                from ibkr.order_book_history import get_order_book_history as _get_obh
+                                import time as _r14_time
+                                from datetime import datetime as _r14_dt, timezone as _r14_tz
 
-                                        _r14_res = get_order_book_history(
-                                            ibkr_ticker,
-                                            start=_r14_start_str,
-                                            end=_r14_end_str,
-                                            max_points=30,
-                                        ) or {}
-                                        _r14_history = _r14_res.get('points') or []
-                                        _r14_sig = maybe_rule14_signal(int(hwnd), _r14_history)
-                                        # Add R14 state to the ibkr_live_state broadcast
-                                        if ibkr_ticker in ibkr_live_state:
-                                            ibkr_live_state[ibkr_ticker]['r14'] = r14_state_for_frontend(int(hwnd))
-                                        else:
-                                            ibkr_live_state[ibkr_ticker] = {
-                                                'ticker': ibkr_ticker,
-                                                'prices': [],
-                                                'trend': _r14_s.last_trend,
-                                                'price': signal_price,
-                                                'last_signal': None,
-                                                'r14': r14_state_for_frontend(int(hwnd)),
-                                            }
-                                        if _r14_sig in ('buy', 'sell'):
-                                            # R14 overrides — dispatch IBKR order directly
-                                            import asyncio as _asyncio
-                                            from ibkr.order_router import handle_trade_event as _hte
-                                            from db.queries import get_bot_db_entry
-                                            _bot_db = get_bot_db_entry(int(hwnd)) or {}
-                                            _bot_session = bot if isinstance(bot, dict) else {}
-                                            _bot_row_r14 = {**_bot_db, **_bot_session}
-                                            _r14_signal_price = signal_price or _r14_s.last_mid_price or 0
-                                            _trade_dict_r14 = {
-                                                'direction': _r14_sig,
-                                                'ticker': ibkr_ticker,
-                                                'price': _r14_signal_price,
-                                                'ts': str(_time.time()),
-                                                'bot_id': bot_id,
-                                                'rule': 'R14',
-                                            }
-                                            # Record the placement immediately (before fill)
-                                            _r14_limit_price = None
+                                _r14_ticker = str(bot_ticker or '').strip().upper()
+                                _r14_s = _get_r14(int(hwnd))
+
+                                if _r14_ticker and _r14_s.enabled:
+                                    # Fetch last 60 seconds of order-book history points
+                                    _r14_now = _r14_time.time()
+                                    _r14_end_str = _r14_dt.fromtimestamp(_r14_now, tz=_r14_tz.utc).isoformat().replace('+00:00', 'Z')
+                                    _r14_start_str = _r14_dt.fromtimestamp(_r14_now - 60, tz=_r14_tz.utc).isoformat().replace('+00:00', 'Z')
+
+                                    _r14_res = _get_obh(
+                                        _r14_ticker,
+                                        start=_r14_start_str,
+                                        end=_r14_end_str,
+                                        max_points=30,
+                                    ) or {}
+                                    _r14_history = _r14_res.get('points') or []
+                                    _r14_sig = _maybe_r14(int(hwnd), _r14_history)
+
+                                    # If order-book history had no points yet, fall back
+                                    # to signal_price so the price display is never blank.
+                                    if _r14_s.last_mid_price is None and signal_price:
+                                        try:
+                                            _r14_s.last_mid_price = float(signal_price)
+                                        except Exception:
+                                            pass
+
+                                    # Always push R14 state into ibkr_live_state (works in all modes)
+                                    if _r14_ticker in ibkr_live_state:
+                                        ibkr_live_state[_r14_ticker]['r14'] = _r14_fe(int(hwnd))
+                                    else:
+                                        ibkr_live_state[_r14_ticker] = {
+                                            'ticker': _r14_ticker,
+                                            'prices': [],
+                                            'trend': _r14_s.last_trend,
+                                            'price': signal_price,
+                                            'last_signal': None,
+                                            'r14': _r14_fe(int(hwnd)),
+                                        }
+
+                                    if _r14_sig in ('buy', 'sell'):
+                                        import asyncio as _r14_asyncio
+                                        from ibkr.order_router import handle_trade_event as _r14_hte
+                                        from db.queries import get_bot_db_entry as _get_bot_db
+                                        _r14_bot_db = _get_bot_db(int(hwnd)) or {}
+                                        _r14_bot_session = bot if isinstance(bot, dict) else {}
+                                        _r14_bot_row = {**_r14_bot_db, **_r14_bot_session}
+                                        _r14_sig_price = signal_price or _r14_s.last_mid_price or 0
+                                        _r14_trade = {
+                                            'direction': _r14_sig,
+                                            'ticker': _r14_ticker,
+                                            'price': _r14_sig_price,
+                                            'ts': str(_r14_time.time()),
+                                            'bot_id': bot_id,
+                                            'rule': 'R14',
+                                        }
+                                        _r14_lp = None
+                                        try:
+                                            _r14_lp = float(_r14_sig_price) if _r14_sig_price else None
+                                        except Exception:
+                                            pass
+                                        _r14_record_placed(int(hwnd), _r14_sig, _r14_sig_price or 0, _r14_lp)
+                                        ibkr_live_state[_r14_ticker]['r14'] = _r14_fe(int(hwnd))
+
+                                        async def _r14_fill_wrap(trade_d, bot_r, _hwnd, _sig, _sp, _lp):
+                                            from ibkr.order_router import handle_trade_event as _hte2
+                                            from trading.rule14 import record_order_fill as _rof
                                             try:
-                                                _r14_limit_price = float(_r14_signal_price) if _r14_signal_price else None
-                                            except Exception:
-                                                pass
-                                            record_order_placed(int(hwnd), _r14_sig, _r14_signal_price or 0, _r14_limit_price)
-                                            # Refresh state broadcast to reflect 'placed' status
-                                            ibkr_live_state[ibkr_ticker]['r14'] = r14_state_for_frontend(int(hwnd))
-
-                                            # Wrap the order call so we can capture the fill result
-                                            async def _r14_order_with_fill(trade_d, bot_r, _hwnd, _sig, _sp, _lp):
-                                                from ibkr.order_router import handle_trade_event as _hte2
-                                                from trading.rule14 import record_order_fill as _rof
+                                                await _hte2(trade_d, bot_r, _hwnd)
                                                 try:
-                                                    await _hte2(trade_d, bot_r, _hwnd)
-                                                    # Attempt to read fill result from DB
-                                                    try:
-                                                        from db.queries import get_last_order_for_hwnd_ticker
-                                                        last_order = get_last_order_for_hwnd_ticker(_hwnd, trade_d.get('ticker', ''))
-                                                        if last_order:
-                                                            _rof(
-                                                                _hwnd, _sig, _sp, _lp,
-                                                                last_order.get('fill_price'),
-                                                                last_order.get('status') == 'filled',
-                                                                last_order.get('error_msg') or '',
-                                                            )
-                                                        else:
-                                                            _rof(_hwnd, _sig, _sp, _lp, None, False, 'no order record')
-                                                    except Exception as _fill_read_err:
-                                                        _rof(_hwnd, _sig, _sp, _lp, None, False, str(_fill_read_err))
-                                                except Exception as _order_err:
-                                                    _rof(_hwnd, _sig, _sp, _lp, None, False, str(_order_err))
+                                                    from db.queries import get_last_order_for_hwnd_ticker as _glo
+                                                    last_ord = _glo(_hwnd, trade_d.get('ticker', ''))
+                                                    if last_ord:
+                                                        _rof(_hwnd, _sig, _sp, _lp, last_ord.get('fill_price'),
+                                                             last_ord.get('status') == 'filled', last_ord.get('error_msg') or '')
+                                                    else:
+                                                        _rof(_hwnd, _sig, _sp, _lp, None, False, 'no order record')
+                                                except Exception as _fe:
+                                                    _rof(_hwnd, _sig, _sp, _lp, None, False, str(_fe))
+                                            except Exception as _oe:
+                                                _rof(_hwnd, _sig, _sp, _lp, None, False, str(_oe))
 
-                                            _asyncio.create_task(
-                                                _r14_order_with_fill(
-                                                    _trade_dict_r14, _bot_row_r14, int(hwnd),
-                                                    _r14_sig, _r14_signal_price or 0, _r14_limit_price,
-                                                )
-                                            )
-                                            # Update last_signal in ibkr_live_state
-                                            ibkr_live_state[ibkr_ticker]['last_signal'] = {
-                                                'direction': _r14_sig,
-                                                'price': signal_price,
-                                                'ts': str(_time.time()),
-                                            }
-                                            # R14 fired — skip all other rule processing for this tick
-                                            continue
-                                except Exception as _r14_err:
-                                    import logging as _logging
-                                    _logging.getLogger(__name__).debug(f"[R14] broadcaster error (non-fatal): {_r14_err}")
-                                # ─────────────────────────────────────────────────────────────
+                                        _r14_asyncio.create_task(
+                                            _r14_fill_wrap(_r14_trade, _r14_bot_row, int(hwnd),
+                                                           _r14_sig, _r14_sig_price or 0, _r14_lp)
+                                        )
+                                        ibkr_live_state[_r14_ticker]['last_signal'] = {
+                                            'direction': _r14_sig,
+                                            'price': signal_price,
+                                            'ts': str(_r14_time.time()),
+                                        }
+                                        # R14 fired — skip other rule processing
+                                        continue
+                            except Exception as _r14_outer_err:
+                                import logging as _log14
+                                _log14.getLogger(__name__).warning(f'[R14] broadcaster error: {_r14_outer_err}')
+                            # ─────────────────────────────────────────────────────────────
 
                             if signal_price is None:
                                 continue
