@@ -192,19 +192,22 @@ def r14_state_for_frontend(hwnd: int) -> dict:
     if ref_price is not None and s.last_mid_price is not None:
         pnl = round((s.last_mid_price - ref_price) * s.qty, 4)
         pnl_pct = round(((s.last_mid_price - ref_price) / ref_price) * 100, 4) if ref_price > 0 else None
+    slope_pct = round(s.last_slope_pct * 100, 4)
+    slope_thresh_pct = round(s.slope_threshold * 100, 4)
     return {
         'enabled': s.enabled,
         'qty': s.qty,
         'stop_loss_pct': s.stop_loss_pct,
         'cooldown_secs': s.cooldown_secs,
-        'slope_threshold': round(s.slope_threshold * 100, 4),  # in % for display
+        'slope_threshold': slope_thresh_pct,      # kept for back-compat
+        'slope_threshold_pct': slope_thresh_pct,  # alias used by frontend poll
         'position_price': s.position_price,
         'entry_fill_price': s.entry_fill_price,
         'entry_fill_status': s.entry_fill_status,
         'pnl': pnl,
         'pnl_pct': pnl_pct,
         'last_trend': s.last_trend,
-        'last_slope_pct': round(s.last_slope_pct * 100, 4),  # in % for display
+        'last_slope_pct': slope_pct,              # in % for display
         'last_mid_price': s.last_mid_price,
         'last_signal': s.last_signal,
         'last_signal_ts': s.last_signal_ts,

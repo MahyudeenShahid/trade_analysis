@@ -704,10 +704,6 @@ async def broadcaster_loop():
                     # Keep only the most recent screenshot per-worker to save disk
                     try:
                         if hasattr(svc, 'capture') and hasattr(svc.capture, 'clear_screenshots'):
-                            # Keep enough frames to fill the trade recorder pre-buffer
-                            # (pre_count frames before trade + 1 current). If we only
-                            # kept 1, pre-trade screenshots would be deleted before
-                            # start_trade() could copy them into the trade folder.
                             try:
                                 pre_count = svc.trade_recorder.pre_count if hasattr(svc, 'trade_recorder') else 5
                             except Exception:
@@ -717,6 +713,100 @@ async def broadcaster_loop():
                         pass
             except Exception:
                 pass
+
+            # ── Standalone R14 evaluation pass ────────────────────────────────────
+            # Runs INDEPENDENTLY of the capture-service loop so R14 always broadcasts
+            # live price + trend even when no screenshot capture session is active.
+            try:
+                from trading.rule14 import (
+                    _r14_states as _all_r14,
+                    maybe_rule14_signal as _r14_eval2,
+                    r14_state_for_frontend as _r14_fe2,
+                    record_order_placed as _r14_op2,
+                )
+                from ibkr.order_book_history import get_order_book_history as _r14_obh2
+                from ibkr.order_book import get_mid_price as _r14_mid2
+                import time as _r14t2
+                from datetime import datetime as _r14dt2, timezone as _r14tz2
+
+                for _r14_hwnd2, _r14_st2 in list(_all_r14.items()):
+                    try:
+                        from db.queries import get_bot_db_entry as _gbe4
+                        _r14_row4 = _gbe4(int(_r14_hwnd2)) or {}
+                        _r14_tick4 = str(_r14_row4.get('ticker') or '').strip().upper()
+                        if not _r14_tick4:
+                            continue
+
+                        if _r14_st2.enabled:
+                            # Query last 60s of order-book history
+                            _r14_now4 = _r14t2.time()
+                            _r14_end4 = _r14dt2.fromtimestamp(_r14_now4, tz=_r14tz2.utc).isoformat().replace('+00:00', 'Z')
+                            _r14_start4 = _r14dt2.fromtimestamp(_r14_now4 - 60, tz=_r14tz2.utc).isoformat().replace('+00:00', 'Z')
+                            _r14_res4 = _r14_obh2(_r14_tick4, start=_r14_start4, end=_r14_end4, max_points=30) or {}
+                            _r14_pts4 = _r14_res4.get('points') or []
+                            _r14_sig4 = _r14_eval2(int(_r14_hwnd2), _r14_pts4)
+
+                            # Fallback live price when no OB history yet
+                            if _r14_st2.last_mid_price is None:
+                                try:
+                                    _lp4 = _r14_mid2(_r14_tick4)
+                                    if _lp4:
+                                        _r14_st2.last_mid_price = float(_lp4)
+                                except Exception:
+                                    pass
+
+                            # Dispatch order if R14 fired
+                            if _r14_sig4 in ('buy', 'sell'):
+                                import asyncio as _r14aio4
+                                from db.queries import get_bot_db_entry as _gbe5
+                                _r14_bot5 = _gbe5(int(_r14_hwnd2)) or {}
+                                _r14_sp4 = _r14_st2.last_mid_price or 0
+                                _r14_td4 = {
+                                    'direction': _r14_sig4, 'ticker': _r14_tick4,
+                                    'price': _r14_sp4, 'ts': str(_r14t2.time()),
+                                    'bot_id': str(_r14_hwnd2), 'rule': 'R14',
+                                }
+                                _r14_lp4 = float(_r14_sp4) if _r14_sp4 else None
+                                _r14_op2(int(_r14_hwnd2), _r14_sig4, _r14_sp4, _r14_lp4)
+
+                                async def _r14_fw4(td, br, hw, sg, sp, lp):
+                                    from ibkr.order_router import handle_trade_event as _h4
+                                    from trading.rule14 import record_order_fill as _rf4
+                                    try:
+                                        await _h4(td, br, hw)
+                                        try:
+                                            from db.queries import get_last_order_for_hwnd_ticker as _glo4
+                                            lo4 = _glo4(hw, td.get('ticker', ''))
+                                            if lo4:
+                                                _rf4(hw, sg, sp, lp, lo4.get('fill_price'),
+                                                     lo4.get('status') == 'filled', lo4.get('error_msg') or '')
+                                            else:
+                                                _rf4(hw, sg, sp, lp, None, False, 'no record')
+                                        except Exception as _fe4:
+                                            _rf4(hw, sg, sp, lp, None, False, str(_fe4))
+                                    except Exception as _oe4:
+                                        _rf4(hw, sg, sp, lp, None, False, str(_oe4))
+                                _r14aio4.create_task(_r14_fw4(
+                                    _r14_td4, _r14_bot5, int(_r14_hwnd2), _r14_sig4, _r14_sp4, _r14_lp4
+                                ))
+
+                        # Always push R14 state (enabled or disabled) into the WS payload
+                        if _r14_tick4 in ibkr_live_state:
+                            ibkr_live_state[_r14_tick4]['r14'] = _r14_fe2(int(_r14_hwnd2))
+                        else:
+                            ibkr_live_state[_r14_tick4] = {
+                                'ticker': _r14_tick4, 'prices': [], 'trend': _r14_st2.last_trend,
+                                'price': _r14_st2.last_mid_price, 'last_signal': None,
+                                'r14': _r14_fe2(int(_r14_hwnd2)),
+                            }
+                    except Exception as _r14_inner2:
+                        import logging as _logr14
+                        _logr14.getLogger(__name__).warning(f'[R14 standalone] hwnd={_r14_hwnd2}: {_r14_inner2}')
+            except Exception as _r14_outer4:
+                import logging as _logr14o
+                _logr14o.getLogger(__name__).warning(f'[R14 standalone outer]: {_r14_outer4}')
+            # ─────────────────────────────────────────────────────────────────────
+
             # Collect only NEW trades since last broadcast (delta — keeps payload tiny)
             new_trades = []
             try:

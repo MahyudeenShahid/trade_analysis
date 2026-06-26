@@ -782,7 +782,42 @@ async def rule14_configure(payload: dict, _auth=Depends(require_api_key)):
 @router.get("/rule14/state/{hwnd}")
 async def rule14_state(hwnd: int, _auth=Depends(require_api_key)):
     """Return current R14 runtime state for a bot (position, trend, P&L, etc.)."""
-    from trading.rule14 import r14_state_for_frontend
+    from trading.rule14 import r14_state_for_frontend, get_r14_state, maybe_rule14_signal
+    s = get_r14_state(hwnd)
+
+    # If we have no price yet, try to fetch it from IBKR + run slope eval
+    if s.last_mid_price is None or s.enabled:
+        try:
+            from db.queries import get_bot_db_entry
+            bot_row = get_bot_db_entry(hwnd) or {}
+            ticker = str(bot_row.get('ticker') or '').strip().upper()
+            if ticker:
+                # Try live mid price from IBKR OB
+                try:
+                    from ibkr.order_book import get_mid_price
+                    live_p = get_mid_price(ticker)
+                    if live_p and s.last_mid_price is None:
+                        s.last_mid_price = float(live_p)
+                except Exception:
+                    pass
+
+                # Run slope evaluation from recent OB history
+                if s.enabled:
+                    import time as _t
+                    from datetime import datetime as _dt, timezone as _tz
+                    from ibkr.order_book_history import get_order_book_history
+                    _now = _t.time()
+                    _end = _dt.fromtimestamp(_now, tz=_tz.utc).isoformat().replace('+00:00', 'Z')
+                    _start = _dt.fromtimestamp(_now - 60, tz=_tz.utc).isoformat().replace('+00:00', 'Z')
+                    try:
+                        _res = get_order_book_history(ticker, start=_start, end=_end, max_points=30) or {}
+                        _pts = _res.get('points') or []
+                        maybe_rule14_signal(hwnd, _pts)
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+
     return r14_state_for_frontend(hwnd)
 
 
