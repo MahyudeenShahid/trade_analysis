@@ -255,12 +255,17 @@ async def handle_trade_event(
             try:
                 from ibkr.order_book import get_mid_price
                 mid = get_mid_price(ticker)
-                if direction.lower() == 'buy' and mid is not None and abs(limit_price - float(mid)) < 1e-6:
-                    try:
-                        offset = float(bot_row.get('rule_11_limit_offset') or bot_row.get('limit_offset') or 0.01)
-                    except Exception:
-                        offset = 0.01
-                    limit_price = float(limit_price) + float(offset if offset >= 0 else 0.01)
+                try:
+                    offset = float(bot_row.get('rule_11_limit_offset') or bot_row.get('limit_offset') or 0.01)
+                except Exception:
+                    offset = 0.01
+                offset = max(offset, 0.01)  # Ensure at least 1 cent offset
+                if direction.lower() == 'buy':
+                    # Buy slightly above mid/signal to ensure fill
+                    limit_price = float(limit_price) + offset
+                elif direction.lower() == 'sell':
+                    # Sell slightly below mid/signal to ensure fill
+                    limit_price = float(limit_price) - offset
             except Exception:
                 pass
 

@@ -39,6 +39,7 @@ class Rule14State:
     stop_loss_pct: float = 0.0        # 0 = disabled, e.g. 0.5 = 0.5%
     cooldown_secs: float = 0.0        # 0 = no cooldown
     slope_threshold: float = DEFAULT_SLOPE_THRESHOLD  # min slope to trigger
+    strategy_mode: str = 'scan'                       # 'scan' or 'slope'
 
     # Position tracking
     position_price: Optional[float] = None   # signal price at entry, None = flat
@@ -89,7 +90,8 @@ def get_r14_state(hwnd: int) -> Rule14State:
 
 def configure_r14(hwnd: int, *, enabled: bool, qty: int = 1,
                   stop_loss_pct: float = 0.0, cooldown_secs: float = 0.0,
-                  slope_threshold: float = DEFAULT_SLOPE_THRESHOLD) -> Rule14State:
+                  slope_threshold: float = DEFAULT_SLOPE_THRESHOLD,
+                  strategy_mode: str = 'scan') -> Rule14State:
     """Update config for this bot. Call from API route."""
     s = get_r14_state(hwnd)
     s.enabled = enabled
@@ -97,6 +99,9 @@ def configure_r14(hwnd: int, *, enabled: bool, qty: int = 1,
     s.stop_loss_pct = max(0.0, float(stop_loss_pct))
     s.cooldown_secs = max(0.0, float(cooldown_secs))
     s.slope_threshold = max(0.0, float(slope_threshold))
+    s.strategy_mode = str(strategy_mode).strip().lower()
+    if s.strategy_mode not in ('scan', 'slope'):
+        s.strategy_mode = 'scan'
     if not enabled:
         s.status_text = 'Disabled'
     return s
@@ -201,6 +206,7 @@ def r14_state_for_frontend(hwnd: int) -> dict:
         'cooldown_secs': s.cooldown_secs,
         'slope_threshold': slope_thresh_pct,      # kept for back-compat
         'slope_threshold_pct': slope_thresh_pct,  # alias used by frontend poll
+        'strategy_mode': s.strategy_mode,
         'position_price': s.position_price,
         'entry_fill_price': s.entry_fill_price,
         'entry_fill_status': s.entry_fill_status,
@@ -252,10 +258,10 @@ def _mid_from_point(point: dict) -> Optional[float]:
 def maybe_rule14_signal(
     hwnd: int,
     history_points: list[dict],   # raw order-book history [{bids,asks,ts}...]
-    lookback: int = 10,
+    lookback: int = 15,
 ) -> Optional[str]:
     """
-    Evaluate R14 logic for one tick.
+    Evaluate R14 logic for one tick by comparing point-to-point changes and scanning right-to-left.
 
     Returns 'buy', 'sell', or None.
     Updates state in-place.
@@ -269,28 +275,68 @@ def maybe_rule14_signal(
     mids = [_mid_from_point(p) for p in recent]
     mids = [m for m in mids if m is not None]
 
-    if not mids:
+    if len(mids) < 2:
         return None
 
     cur_mid = mids[-1]
     s.last_mid_price = cur_mid
 
-    slope = _slope_pct(mids)
-    if slope is None:
-        return None
-
-    s.last_slope_pct = slope
-
-    threshold = s.slope_threshold  # minimum slope magnitude to act on
-    # Determine trend direction with threshold guard
-    if slope > threshold:
-        trend = 'up'
-    elif slope < -threshold:
-        trend = 'down'
+    # Calculate direction based on chosen strategy mode
+    if s.strategy_mode == 'slope':
+        # Simple Slope approach: check if total start-to-end change is above threshold
+        first_val = mids[0]
+        if first_val <= 0:
+            trend = ''
+        else:
+            slope = (cur_mid - first_val) / first_val
+            if slope > s.slope_threshold:
+                trend = 'up'
+            elif slope < -s.slope_threshold:
+                trend = 'down'
+            else:
+                trend = ''
     else:
-        trend = ''  # flat / noise — do nothing
+        # Scan-Back approach: point-to-point step classification + scan right-to-left
+        dirs = []
+        interval_threshold = s.slope_threshold / max(1, len(mids) - 1)
+
+        for i in range(1, len(mids)):
+            prev = mids[i - 1]
+            if prev <= 0:
+                dirs.append(0)
+                continue
+            change_pct = (mids[i] - prev) / prev
+            if change_pct > interval_threshold:
+                dirs.append(1)   # UP
+            elif change_pct < -interval_threshold:
+                dirs.append(-1)  # DOWN
+            else:
+                dirs.append(0)   # FLAT
+
+        end_dir = 0
+        for d in reversed(dirs):
+            if d != 0:
+                end_dir = d
+                break
+
+        if end_dir == 1:
+            trend = 'up'
+        elif end_dir == -1:
+            trend = 'down'
+        else:
+            trend = ''
+
+    # Print debug info to console to see what is going on
+    try:
+        print(f"[R14 Debug] hwnd={hwnd} mode={s.strategy_mode} mids={mids[-5:]} threshold={s.slope_threshold:.6f} trend={trend}")
+    except Exception:
+        pass
 
     s.last_trend = trend
+
+    # Calculate overall raw slope percentage for frontend display
+    first_val = mids[0]
+    s.last_slope_pct = (mids[-1] - first_val) / first_val if first_val > 0 else 0.0
 
     now = time.time()
 

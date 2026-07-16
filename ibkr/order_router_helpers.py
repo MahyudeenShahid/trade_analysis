@@ -6,15 +6,13 @@ from typing import Optional
 logger = logging.getLogger(__name__)
 
 DEFAULT_MAX_RETRIES = 3
-ORDER_FILL_TIMEOUT = 30  # seconds to wait for a fill
+ORDER_FILL_TIMEOUT = 45  # seconds to wait for a fill (limit orders need more time)
 
 # Non-retryable error patterns — bail immediately if any of these appear
 NON_RETRYABLE_PATTERNS = [
     "No market data on major exchange",  # Market closed / no data
     "no market data",
     "market closed",
-    "outside rth",
-    "outside regular trading hours",
     "Order Canceled - reason",  # IBKR-initiated cancel with explicit reason
     "Order rejected",
     "201",  # Order rejected

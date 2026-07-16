@@ -386,7 +386,7 @@ async def broadcaster_loop():
 
             # Step 3: Run standalone R14 evaluation pass
             try:
-                evaluate_standalone_r14(ibkr_live_state)
+                await evaluate_standalone_r14(ibkr_live_state)
             except Exception as se_err:
                 logger.error(f"[Standalone R14 error]: {se_err}")
 

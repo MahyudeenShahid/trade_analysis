@@ -1,6 +1,8 @@
 """Rule 14 evaluation and order triggers for WebSocket broadcaster."""
 
 import logging
+import asyncio
+from datetime import datetime, timezone
 
 logger = logging.getLogger(__name__)
 
@@ -46,6 +48,12 @@ def evaluate_r14_for_bot(
         max_points=30,
     ) or {}
     _r14_history = _r14_res.get('points') or []
+
+    # Fallback to rolling live price list if OB history from SQLite is empty
+    if not _r14_history and _r14_ticker in ibkr_live_state:
+        prices = ibkr_live_state[_r14_ticker].get('prices') or []
+        _r14_history = [{'bids': [{'price': p}], 'asks': [{'price': p}]} for p in prices]
+
     _r14_sig = _maybe_r14(int(hwnd), _r14_history)
 
     # If order-book history had no points yet, fall back to signal_price
@@ -69,7 +77,6 @@ def evaluate_r14_for_bot(
         }
 
     if _r14_sig in ('buy', 'sell'):
-        import asyncio as _r14_asyncio
         from db.queries import get_bot_db_entry as _get_bot_db
         _r14_bot_db = _get_bot_db(int(hwnd)) or {}
         _r14_bot_session = bot if isinstance(bot, dict) else {}
@@ -95,6 +102,39 @@ def evaluate_r14_for_bot(
             from ibkr.order_router import handle_trade_event as _hte2
             from trading.rule14 import record_order_fill as _rof
             try:
+                live_enabled_raw = bot_r.get('live_trading_enabled')
+                if isinstance(live_enabled_raw, str):
+                    live_enabled = live_enabled_raw.strip().lower() in ('1', 'true', 'yes', 'on')
+                else:
+                    live_enabled = bool(live_enabled_raw)
+
+                # Simulated / Paper fill
+                if not live_enabled:
+                    await asyncio.sleep(0.5)
+                    _rof(_hwnd, _sig, _sp, _lp, _sp, True, '')
+                    try:
+                        from db.queries import save_live_order
+                        save_live_order({
+                            "ts": datetime.now(timezone.utc).isoformat() + "Z",
+                            "hwnd": _hwnd,
+                            "bot_id": bot_r.get('id') or bot_r.get('bot_id'),
+                            "ticker": trade_d.get('ticker'),
+                            "direction": _sig,
+                            "order_type": "limit",
+                            "qty": bot_r.get('order_size_value', 1.0),
+                            "price": _sp,
+                            "limit_price": _lp,
+                            "status": "filled",
+                            "trade_ref_id": trade_d.get('ts'),
+                            "fill_price": _sp,
+                            "fill_ts": datetime.now(timezone.utc).isoformat() + "Z",
+                            "error_msg": "Paper Trade Simulated",
+                        })
+                    except Exception:
+                        pass
+                    return
+
+                # Route via TWS/Gateway if live trading is enabled
                 await _hte2(trade_d, bot_r, _hwnd)
                 try:
                     from db.queries import get_last_order_for_hwnd_ticker as _glo
@@ -109,7 +149,7 @@ def evaluate_r14_for_bot(
             except Exception as _oe:
                 _rof(_hwnd, _sig, _sp, _lp, None, False, str(_oe))
 
-        _r14_asyncio.create_task(
+        asyncio.create_task(
             _r14_fill_wrap(_r14_trade, _r14_bot_row, int(hwnd),
                            _r14_sig, _r14_sig_price or 0, _r14_lp)
         )
@@ -122,7 +162,7 @@ def evaluate_r14_for_bot(
     return False
 
 
-def evaluate_standalone_r14(ibkr_live_state: dict):
+async def evaluate_standalone_r14(ibkr_live_state: dict):
     """Evaluate Rule 14 parameters for all registered bots independently of active screenshot captures."""
     try:
         from trading.rule14 import (
@@ -132,7 +172,7 @@ def evaluate_standalone_r14(ibkr_live_state: dict):
             record_order_placed as _r14_op2,
         )
         from ibkr.order_book_history import get_order_book_history as _r14_obh2
-        from ibkr.order_book import get_mid_price as _r14_mid2
+        from ibkr.order_book import get_mid_price as _r14_mid2, ensure_top_of_book as _r14_ensure
         import time as _r14t2
         from datetime import datetime as _r14dt2, timezone as _r14tz2
 
@@ -145,12 +185,21 @@ def evaluate_standalone_r14(ibkr_live_state: dict):
                     continue
 
                 if _r14_st2.enabled:
+                    # Keep Level 1 fallback subscription active for active Rule 14 bots
+                    await _r14_ensure(_r14_tick4)
+
                     # Query last 60s of order-book history
                     _r14_now4 = _r14t2.time()
                     _r14_end4 = _r14dt2.fromtimestamp(_r14_now4, tz=_r14tz2.utc).isoformat().replace('+00:00', 'Z')
                     _r14_start4 = _r14dt2.fromtimestamp(_r14_now4 - 60, tz=_r14tz2.utc).isoformat().replace('+00:00', 'Z')
                     _r14_res4 = _r14_obh2(_r14_tick4, start=_r14_start4, end=_r14_end4, max_points=30) or {}
                     _r14_pts4 = _r14_res4.get('points') or []
+
+                    # Fallback to rolling live price list if OB history from SQLite is empty
+                    if not _r14_pts4 and _r14_tick4 in ibkr_live_state:
+                        prices = ibkr_live_state[_r14_tick4].get('prices') or []
+                        _r14_pts4 = [{'bids': [{'price': p}], 'asks': [{'price': p}]} for p in prices]
+
                     _r14_sig4 = _r14_eval2(int(_r14_hwnd2), _r14_pts4)
 
                     # Fallback live price when no OB history yet
@@ -164,7 +213,6 @@ def evaluate_standalone_r14(ibkr_live_state: dict):
 
                     # Dispatch order if R14 fired
                     if _r14_sig4 in ('buy', 'sell'):
-                        import asyncio as _r14aio4
                         from db.queries import get_bot_db_entry as _gbe5
                         _r14_bot5 = _gbe5(int(_r14_hwnd2)) or {}
                         _r14_sp4 = _r14_st2.last_mid_price or 0
@@ -180,6 +228,39 @@ def evaluate_standalone_r14(ibkr_live_state: dict):
                             from ibkr.order_router import handle_trade_event as _h4
                             from trading.rule14 import record_order_fill as _rf4
                             try:
+                                live_enabled_raw = br.get('live_trading_enabled')
+                                if isinstance(live_enabled_raw, str):
+                                    live_enabled = live_enabled_raw.strip().lower() in ('1', 'true', 'yes', 'on')
+                                else:
+                                    live_enabled = bool(live_enabled_raw)
+
+                                # Simulated / Paper fill
+                                if not live_enabled:
+                                    await asyncio.sleep(0.5)
+                                    _rf4(hw, sg, sp, lp, sp, True, '')
+                                    try:
+                                        from db.queries import save_live_order
+                                        save_live_order({
+                                            "ts": datetime.now(timezone.utc).isoformat() + "Z",
+                                            "hwnd": hw,
+                                            "bot_id": br.get('id') or br.get('bot_id'),
+                                            "ticker": td.get('ticker'),
+                                            "direction": sg,
+                                            "order_type": "limit",
+                                            "qty": br.get('order_size_value', 1.0),
+                                            "price": sp,
+                                            "limit_price": lp,
+                                            "status": "filled",
+                                            "trade_ref_id": td.get('ts'),
+                                            "fill_price": sp,
+                                            "fill_ts": datetime.now(timezone.utc).isoformat() + "Z",
+                                            "error_msg": "Paper Trade Simulated",
+                                        })
+                                    except Exception:
+                                        pass
+                                    return
+
+                                # Route via TWS/Gateway if live trading is enabled
                                 await _h4(td, br, hw)
                                 try:
                                     from db.queries import get_last_order_for_hwnd_ticker as _glo4
@@ -193,7 +274,8 @@ def evaluate_standalone_r14(ibkr_live_state: dict):
                                     _rf4(hw, sg, sp, lp, None, False, str(_fe4))
                             except Exception as _oe4:
                                 _rf4(hw, sg, sp, lp, None, False, str(_oe4))
-                        _r14aio4.create_task(_r14_fw4(
+
+                        asyncio.create_task(_r14_fw4(
                             _r14_td4, _r14_bot5, int(_r14_hwnd2), _r14_sig4, _r14_sp4, _r14_lp4
                         ))
 

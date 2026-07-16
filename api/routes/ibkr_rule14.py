@@ -25,6 +25,7 @@ async def rule14_configure(payload: dict, _auth=Depends(require_api_key)):
     if hwnd <= 0:
         raise HTTPException(status_code=400, detail='hwnd required')
     slope_threshold_pct = float(payload.get('slope_threshold', DEFAULT_SLOPE_THRESHOLD * 100))
+    strategy_mode = str(payload.get('strategy_mode', 'scan')).strip().lower()
     configure_r14(
         hwnd,
         enabled=bool(payload.get('enabled', False)),
@@ -32,6 +33,7 @@ async def rule14_configure(payload: dict, _auth=Depends(require_api_key)):
         stop_loss_pct=float(payload.get('stop_loss_pct', 0.0)),
         cooldown_secs=float(payload.get('cooldown_secs', 0.0)),
         slope_threshold=slope_threshold_pct / 100.0,  # convert % to fraction
+        strategy_mode=strategy_mode,
     )
     return {'ok': True, 'state': r14_state_for_frontend(hwnd)}
 
@@ -115,14 +117,25 @@ async def rule14_manual_order(payload: dict, _auth=Depends(require_api_key)):
         'rule': 'R14_MANUAL',
     }
 
-    # Build a minimal bot_row using R14 qty
+    # Fetch bot row from database to use its configured order types, offsets, etc.
+    from db.queries import get_bot_db_entry
+    db_bot = get_bot_db_entry(hwnd) or {}
+
+    payload_order_type = payload.get('order_type')
+    buy_order_type = payload_order_type or db_bot.get('buy_order_type') or 'limit'
+    sell_order_type = payload_order_type or db_bot.get('sell_order_type') or 'limit'
+
+    # Build a complete bot_row preserving settings like offsets, delays, and order types
     bot_row = {
+        **db_bot,
         'live_trading_enabled': True,
         'ticker': ticker,
         'qty': s.qty,
         'order_size': s.qty,
-        'buy_order_type': 'limit',
-        'sell_order_type': 'limit',
+        'order_size_type': 'fixed',
+        'order_size_value': float(s.qty),
+        'buy_order_type': buy_order_type,
+        'sell_order_type': sell_order_type,
     }
 
     asyncio.create_task(handle_trade_event(trade_dict, bot_row, hwnd))
