@@ -1,13 +1,4 @@
-"""IBKR order placement, retry logic, and trade event dispatcher.
-
-Flow:
-  broadcaster_loop detects a new buy/sell trade
-    → asyncio.create_task(handle_trade_event(trade_dict, bot_row, hwnd))
-        → place_order(req, settings)
-            → retries up to max_retries times with configurable delay
-            → validates conditions before each retry
-            → writes result to live_orders table
-"""
+"""IBKR order placement, retry logic, and trade event dispatcher."""
 
 import asyncio
 import json
@@ -16,43 +7,17 @@ from datetime import datetime
 from typing import Optional, Callable
 
 from .models import IBKROrderRequest, IBKROrderResult
+from .order_router_helpers import (
+    DEFAULT_MAX_RETRIES,
+    ORDER_FILL_TIMEOUT,
+    _is_non_retryable,
+    _ib_async_available,
+    _parse_ibkr_error,
+    _calc_qty,
+    update_cached_nav,
+)
 
 logger = logging.getLogger(__name__)
-
-DEFAULT_MAX_RETRIES = 3
-ORDER_FILL_TIMEOUT = 30  # seconds to wait for a fill
-
-# ---------------------------------------------------------------------------
-# Non-retryable error patterns — bail immediately if any of these appear
-# in the IBKR cancel reason or error message. Retrying won't help.
-# ---------------------------------------------------------------------------
-NON_RETRYABLE_PATTERNS = [
-    "No market data on major exchange",   # Market closed / no data
-    "no market data",
-    "market closed",
-    "outside rth",
-    "outside regular trading hours",
-    "Order Canceled - reason",             # IBKR-initiated cancel with explicit reason
-    "Order rejected",
-    "201",                                  # Order rejected
-    "200",                                  # No security definition
-    "The contract is not available",
-    "Invalid order",
-    "Margin required",
-    "insufficient funds",
-    "account does not have trading permissions",
-    "not subscribed",
-]
-
-
-def _is_non_retryable(error_text: str) -> bool:
-    """Return True if the error is permanent and retrying will not help."""
-    low = (error_text or "").lower()
-    for pattern in NON_RETRYABLE_PATTERNS:
-        if pattern.lower() in low:
-            return True
-    return False
-
 
 
 async def place_order(
@@ -63,22 +28,7 @@ async def place_order(
     trend_checker: Optional[Callable[[], Optional[str]]] = None,
     cancel_on_trend_reversal: bool = False,
 ) -> IBKROrderResult:
-    """Place a single order via IBKR with up to max_retries attempts.
-
-    Args:
-        req: Order request details
-        retry_delay: Seconds to wait between retry attempts
-        max_retries: Maximum number of retry attempts
-        condition_validator: Optional callback that returns True if conditions
-                            still valid for this order. If it returns False,
-                            retry is skipped and order is cancelled.
-        trend_checker: Optional callback that returns current trend ("up"/"down"/None).
-                      Used with cancel_on_trend_reversal.
-        cancel_on_trend_reversal: If True, cancel pending order when trend reverses
-                                  (BUY cancelled if trend goes down, SELL cancelled if trend goes up).
-
-    Returns IBKROrderResult(ok=True) on fill, IBKROrderResult(ok=False) on failure.
-    """
+    """Place a single order via IBKR with up to max_retries attempts."""
     from .client import ib, ensure_connected
     from db.queries import get_app_settings
 
@@ -100,7 +50,6 @@ async def place_order(
 
     last_error = "Unknown error"
     for attempt in range(max_retries):
-        # Before retry (not first attempt), validate conditions if validator provided
         if attempt > 0 and condition_validator is not None:
             try:
                 if not condition_validator():
@@ -117,8 +66,6 @@ async def place_order(
 
         try:
             await ensure_connected(host, port, cid)
-
-            # Qualify contract to get conId etc.
             await ib.qualifyContractsAsync(contract)
 
             if req.order_type == "limit":
@@ -130,7 +77,6 @@ async def place_order(
             else:
                 order = MarketOrder(req.direction.upper(), req.qty)
 
-            # Enable trading outside regular trading hours (pre-market/after-hours)
             order.outsideRth = True
 
             trade = ib.placeOrder(contract, order)
@@ -139,8 +85,6 @@ async def place_order(
                 f"{req.qty} {req.ticker} (attempt {attempt + 1}/{max_retries})"
             )
 
-            # Wait for terminal status with timeout
-            # Also check for trend reversal if enabled
             deadline = asyncio.get_event_loop().time() + ORDER_FILL_TIMEOUT
             trend_cancelled = False
             while asyncio.get_event_loop().time() < deadline:
@@ -149,13 +93,10 @@ async def place_order(
                 if status in ("Filled", "ApiCancelled", "Cancelled", "Inactive"):
                     break
 
-                # Check for trend reversal cancellation
                 if cancel_on_trend_reversal and trend_checker is not None and status not in ("Filled",):
                     try:
                         current_trend = trend_checker()
                         if current_trend:
-                            # BUY order should be cancelled if trend is now "down"
-                            # SELL order should be cancelled if trend is now "up"
                             should_cancel = (
                                 (req.direction.lower() == "buy" and current_trend.lower() == "down") or
                                 (req.direction.lower() == "sell" and current_trend.lower() == "up")
@@ -186,24 +127,20 @@ async def place_order(
                     retries=attempt,
                 )
             elif trend_cancelled:
-                # Trend reversed — don't retry, just return failure
                 return IBKROrderResult(
                     ok=False,
                     error_msg="Order cancelled — trend reversed",
                     retries=attempt,
                 )
             else:
-                # Cancel unfilled order to prevent it staying open in IBKR
                 if status not in ("ApiCancelled", "Cancelled", "Inactive"):
                     try:
                         ib.cancelOrder(trade.order)
                         logger.info(f"[IBKR] Cancelled unfilled order {trade.order.orderId} (status was {status})")
-                        # Wait briefly for cancellation to process
                         await asyncio.sleep(0.5)
                     except Exception as cancel_err:
                         logger.warning(f"[IBKR] Failed to cancel order: {cancel_err}")
 
-                # Try to extract the real IBKR cancel reason from trade.log entries
                 cancel_reason = None
                 try:
                     for log_entry in reversed(trade.log):
@@ -211,9 +148,8 @@ async def place_order(
                         if 'Order Canceled' in msg or 'reason:' in msg:
                             cancel_reason = msg
                             break
-                        # Also check errorCode 202 specifically
                         if getattr(log_entry, 'errorCode', None) == 202:
-                            cancel_reason = msg or f"Order cancelled by IBKR (error 202)"
+                            cancel_reason = msg or "Order cancelled by IBKR (error 202)"
                             break
                 except Exception:
                     pass
@@ -224,8 +160,6 @@ async def place_order(
                     last_error = f"Order ended with status: {status}"
                 logger.warning(f"[IBKR] {last_error} (attempt {attempt + 1}/{max_retries})")
 
-                # If this is a permanent error (market closed, no data, rejected)
-                # stop retrying immediately — it won't succeed
                 if _is_non_retryable(last_error):
                     logger.warning(
                         f"[IBKR] Non-retryable error detected — aborting order: {last_error}"
@@ -239,7 +173,6 @@ async def place_order(
         except Exception as e:
             last_error = _parse_ibkr_error(str(e))
             logger.error(f"[IBKR] place_order attempt {attempt + 1}/{max_retries} failed: {last_error}")
-            # Non-retryable exceptions — bail out immediately
             if _is_non_retryable(last_error):
                 logger.warning(f"[IBKR] Non-retryable exception — aborting: {last_error}")
                 return IBKROrderResult(ok=False, error_msg=last_error, retries=attempt)
@@ -251,21 +184,13 @@ async def place_order(
     return IBKROrderResult(ok=False, error_msg=last_error, retries=max_retries - 1)
 
 
-async def handle_trade_event(trade_dict: dict, bot_row: dict, hwnd: int, get_current_signal: Optional[Callable[[], Optional[str]]] = None):
-    """Top-level dispatcher called from the broadcaster loop when a trade fires.
-
-    Guards:
-      - bot must have live_trading_enabled == 1
-      - app_settings must have ibkr_enabled == '1'
-      - order value must exceed min_trade_dollars (if configured)
-
-    Args:
-        trade_dict: Trade data including direction, ticker, price, etc.
-        bot_row: Bot configuration from database
-        hwnd: Window handle for this bot
-        get_current_signal: Optional callback returning current signal ('buy'/'sell'/None)
-                           Used to validate conditions before retry attempts
-    """
+async def handle_trade_event(
+    trade_dict: dict,
+    bot_row: dict,
+    hwnd: int,
+    get_current_signal: Optional[Callable[[], Optional[str]]] = None,
+):
+    """Top-level dispatcher called from the broadcaster loop when a trade fires."""
     from db.queries import get_app_settings, save_live_order, update_live_order_status
     from ibkr.order_book import get_snapshot
     from screenshot_capture import ScreenshotCapture
@@ -296,19 +221,16 @@ async def handle_trade_event(trade_dict: dict, bot_row: dict, hwnd: int, get_cur
         price = trade_dict.get("price")
         trade_ref_id = trade_dict.get("trade_id") or trade_dict.get("ts")
 
-        # Determine order type
         if direction == "buy":
             order_type = bot_row.get("buy_order_type") or "limit"
         else:
             order_type = bot_row.get("sell_order_type") or "limit"
 
-        # Determine quantity
         qty = _calc_qty(bot_row, cfg, price)
         if qty <= 0:
             logger.warning(f"[IBKR] Calculated qty={qty} — skipping order")
             return
 
-        # Check minimum trade dollars
         min_trade_dollars = float(bot_row.get("min_trade_dollars") or 0)
         if min_trade_dollars > 0 and price is not None:
             trade_value = qty * float(price)
@@ -318,7 +240,6 @@ async def handle_trade_event(trade_dict: dict, bot_row: dict, hwnd: int, get_cur
                 )
                 return
 
-        # Optional maximum trade dollars (safety)
         max_trade_dollars = float(cfg.get("max_trade_dollars") or 0)
         if max_trade_dollars > 0 and price is not None:
             trade_value = qty * float(price)
@@ -331,12 +252,10 @@ async def handle_trade_event(trade_dict: dict, bot_row: dict, hwnd: int, get_cur
         limit_price: Optional[float] = None
         if order_type == "limit" and price is not None:
             limit_price = float(price)
-            # Apply tiny default offset for buy limits when they equal current mid price
             try:
                 from ibkr.order_book import get_mid_price
                 mid = get_mid_price(ticker)
                 if direction.lower() == 'buy' and mid is not None and abs(limit_price - float(mid)) < 1e-6:
-                    # prefer user-configured offset (rule_11_limit_offset) else default +$0.01
                     try:
                         offset = float(bot_row.get('rule_11_limit_offset') or bot_row.get('limit_offset') or 0.01)
                     except Exception:
@@ -363,7 +282,6 @@ async def handle_trade_event(trade_dict: dict, bot_row: dict, hwnd: int, get_cur
 
         ts = datetime.utcnow().isoformat() + "Z"
 
-        # Capture screenshot
         screenshot_path = None
         try:
             base_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "trade_screenshots")
@@ -378,13 +296,11 @@ async def handle_trade_event(trade_dict: dict, bot_row: dict, hwnd: int, get_cur
 
             img = capturer.capture_window(hwnd, screenshot_full_path)
             if img:
-                # Store relative path from trade_screenshots root
                 screenshot_path = os.path.relpath(screenshot_full_path, base_dir).replace(os.sep, '/')
                 logger.info(f"[IBKR] Screenshot saved: {screenshot_path}")
         except Exception as sc_err:
             logger.warning(f"[IBKR] Screenshot capture failed (non-fatal): {sc_err}")
 
-        # Save pending row first so we have an id for updates
         order_row_id = save_live_order(
             {
                 "ts": ts,
@@ -402,11 +318,9 @@ async def handle_trade_event(trade_dict: dict, bot_row: dict, hwnd: int, get_cur
             }
         )
 
-        # Save order book snapshot at the moment the order fires
         try:
             snap = get_snapshot(ticker)
             if snap.get("bids") or snap.get("asks"):
-                from db.queries import query_records
                 from db.connection import DB_PATH, DB_LOCK
                 import sqlite3
                 with DB_LOCK:
@@ -420,27 +334,21 @@ async def handle_trade_event(trade_dict: dict, bot_row: dict, hwnd: int, get_cur
         except Exception as snap_err:
             logger.debug(f"[IBKR] Snapshot save failed (non-fatal): {snap_err}")
 
-        # Build condition validator for retry
         condition_validator = None
         if validate_on_retry and get_current_signal is not None:
             def validator():
-                """Return True if current signal still matches original direction."""
                 try:
                     current = get_current_signal()
                     if current is None:
-                        # No clear signal — allow retry (conservative)
                         return True
                     return current.lower() == direction.lower()
                 except Exception:
-                    return True  # On error, allow retry
+                    return True
             condition_validator = validator
 
-        # Build trend checker for cancel-on-reversal
-        # Maps signal to trend: "buy" → "up", "sell" → "down"
         trend_checker = None
         if cancel_on_reversal and get_current_signal is not None:
             def check_trend():
-                """Return current trend based on signal."""
                 try:
                     current = get_current_signal()
                     if current is None:
@@ -450,7 +358,6 @@ async def handle_trade_event(trade_dict: dict, bot_row: dict, hwnd: int, get_cur
                     return None
             trend_checker = check_trend
 
-        # Place the order
         result = await place_order(
             req,
             retry_delay=retry_delay,
@@ -460,7 +367,6 @@ async def handle_trade_event(trade_dict: dict, bot_row: dict, hwnd: int, get_cur
             cancel_on_trend_reversal=cancel_on_reversal,
         )
 
-        # Calculate profit for SELL orders
         profit = None
         buy_order_id = None
         buy_fill_ts = None
@@ -483,7 +389,6 @@ async def handle_trade_event(trade_dict: dict, bot_row: dict, hwnd: int, get_cur
             except Exception as pnl_err:
                 logger.warning(f"[IBKR] P&L calculation failed (non-fatal): {pnl_err}")
 
-        # Auto-save chart bars to DB for offline replay
         if result.ok and direction.lower() == "sell" and trade_ref_id and ticker:
             try:
                 from api.routes.ibkr import _auto_save_trade_replay
@@ -499,7 +404,6 @@ async def handle_trade_event(trade_dict: dict, bot_row: dict, hwnd: int, get_cur
             except Exception as as_err:
                 logger.debug(f"[IBKR] Auto-save task creation failed (non-fatal): {as_err}")
 
-        # Update DB row with result
         update_live_order_status(
             order_row_id,
             status="filled" if result.ok else "failed",
@@ -525,97 +429,3 @@ async def handle_trade_event(trade_dict: dict, bot_row: dict, hwnd: int, get_cur
 
     except Exception as e:
         logger.error(f"[IBKR] handle_trade_event error: {e}")
-
-
-def _calc_qty(bot_row: dict, cfg: dict, price: Optional[float] = None) -> float:
-    """Calculate order quantity from bot settings.
-
-    Args:
-        bot_row: Bot configuration
-        cfg: App settings
-        price: Current price (used for percent and dollar calculations)
-    """
-    size_type = bot_row.get("order_size_type") or "fixed"
-    size_value = float(bot_row.get("order_size_value") or 1.0)
-
-    if size_type == "fixed":
-        return max(1.0, round(size_value))
-
-    # Dollar amount - calculate shares from dollar value
-    if size_type == "dollars" and price is not None and price > 0:
-        qty = size_value / float(price)
-        return max(1.0, round(qty))
-
-    # percent of account net liquidation value
-    if size_type == "percent":
-        # Non-blocking: use cached account value if available, else default to 1 share
-        try:
-            from ibkr.account import get_account_value
-            import asyncio
-            loop = asyncio.get_event_loop()
-            if loop.is_running():
-                # Schedule and return default for now; a future tick will have correct value
-                # For simplicity we use a module-level cache updated by a background task
-                nav = _cached_nav if _cached_nav > 0 else 10000.0
-            else:
-                nav = loop.run_until_complete(get_account_value())
-            # Use actual price if available, else rough estimate
-            share_price = float(price) if price and price > 0 else 100.0
-            qty = (nav * (size_value / 100.0)) / share_price
-            return max(1.0, round(qty))
-        except Exception:
-            return 1.0
-
-    return 1.0
-
-
-def _ib_async_available() -> bool:
-    try:
-        import ib_async  # noqa: F401
-        return True
-    except ImportError:
-        return False
-
-
-def _parse_ibkr_error(error_str: str) -> str:
-    """Parse IBKR error codes and return human-readable message.
-
-    Official error codes: https://interactivebrokers.github.io/tws-api/message_codes.html
-    """
-    error_map = {
-        "110": "Price out of range - limit price may be too far from market",
-        "200": "No security definition found for the request",
-        "201": "Order rejected — check contract or order details",
-        "202": "Order cancelled by IBKR — see cancel reason in message",
-        "309": "Max number of market depth requests reached",
-        "316": "Market depth data halted - resubscribe required",
-        "317": "Market depth data reset - deep book must be cleared",
-        "321": "Error validating request - check contract/order details",
-        "354": "Requested market data is not subscribed",
-        "404": "Order ID not found",
-        "434": "Order size does not comply with market rules",
-        "10090": "Part of requested market data is not subscribed",
-        "10186": "Requested market data is not subscribed and delayed data is disabled",
-        "10197": "No market data during competing session",
-        "10147": "OrderId must be specified for modify",
-        "10148": "Can't modify a filled order",
-        "2104": "Market data farm connection is OK (info only)",
-        "2106": "HMDS data farm connection is OK (info only)",
-    }
-
-    for code, msg in error_map.items():
-        if code in error_str:
-            return f"[IBKR Error {code}] {msg}"
-
-    return error_str
-
-
-# Module-level NAV cache (updated by account background task if needed)
-_cached_nav: float = 0.0
-
-
-def update_cached_nav(nav: float):
-    """Update NAV cache value used by order quantity calculator."""
-    global _cached_nav
-    _cached_nav = nav
-
