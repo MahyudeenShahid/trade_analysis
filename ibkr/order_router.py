@@ -68,7 +68,47 @@ async def place_order(
             await ensure_connected(host, port, cid)
             await ib.qualifyContractsAsync(contract)
 
-            if req.order_type == "limit":
+            effective_order_type = req.order_type
+
+            # IBKR does NOT allow market orders outside regular trading hours (pre/after-market).
+            # Even with outsideRth=True, market orders get silently cancelled.
+            # Auto-downgrade to a limit order at mid-price when market is closed.
+            from datetime import timezone, time as dt_time
+            _now_et = datetime.now(timezone.utc).astimezone(
+                __import__('zoneinfo', fromlist=['ZoneInfo']).ZoneInfo('America/New_York')
+            )
+            _market_open = dt_time(9, 30)
+            _market_close = dt_time(16, 0)
+            _is_weekday = _now_et.weekday() < 5
+            _in_rth = _is_weekday and _market_open <= _now_et.time() < _market_close
+
+            if effective_order_type == "market" and not _in_rth:
+                try:
+                    from ibkr.order_book import get_mid_price
+                    _mid = get_mid_price(req.ticker)
+                    if _mid:
+                        effective_order_type = "limit"
+                        req = IBKROrderRequest(
+                            ticker=req.ticker,
+                            direction=req.direction,
+                            order_type="limit",
+                            qty=req.qty,
+                            limit_price=float(_mid),
+                            bot_id=req.bot_id,
+                            hwnd=req.hwnd,
+                            trade_ref_id=req.trade_ref_id,
+                        )
+                        logger.warning(
+                            f"[IBKR] Market order outside RTH — downgraded to LIMIT @ {_mid:.2f} for {req.ticker}"
+                        )
+                    else:
+                        logger.warning(
+                            f"[IBKR] Market order outside RTH but no mid-price available for {req.ticker} — order may fail"
+                        )
+                except Exception as _rth_err:
+                    logger.warning(f"[IBKR] RTH check failed (non-fatal): {_rth_err}")
+
+            if effective_order_type == "limit":
                 if not req.limit_price:
                     return IBKROrderResult(
                         ok=False, error_msg="Limit order requires limit_price", retries=attempt
@@ -259,7 +299,7 @@ async def handle_trade_event(
                     offset = float(bot_row.get('rule_11_limit_offset') or bot_row.get('limit_offset') or 0.01)
                 except Exception:
                     offset = 0.01
-                offset = max(offset, 0.01)  # Ensure at least 1 cent offset
+                offset = max(offset, 0.0)  # Allow 0.0 offset for zero slippage
                 if direction.lower() == 'buy':
                     # Buy slightly above mid/signal to ensure fill
                     limit_price = float(limit_price) + offset

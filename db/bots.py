@@ -111,6 +111,9 @@ def get_bot_db_entry(hwnd: int) -> dict:
             cur = conn.cursor()
             cur.execute("SELECT * FROM bots WHERE hwnd = ?", (int(hwnd),))
             r = cur.fetchone()
+            if not r:
+                cur.execute("SELECT * FROM bots WHERE id = ?", (int(hwnd),))
+                r = cur.fetchone()
             conn.close()
             if not r:
                 return None

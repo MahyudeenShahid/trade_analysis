@@ -49,7 +49,15 @@ def evaluate_r14_for_bot(
     ) or {}
     _r14_history = _r14_res.get('points') or []
 
-    # Fallback to rolling live price list if OB history from SQLite is empty
+    # Fallback 1: if last 60s of order-book history is empty, try querying the last 1 hour (wider database window)
+    if not _r14_history:
+        try:
+            _r14_res = _get_obh(_r14_ticker, max_points=30) or {}
+            _r14_history = _r14_res.get('points') or []
+        except Exception:
+            pass
+
+    # Fallback 2: to rolling live price list if OB history from SQLite is empty
     if not _r14_history and _r14_ticker in ibkr_live_state:
         prices = ibkr_live_state[_r14_ticker].get('prices') or []
         _r14_history = [{'bids': [{'price': p}], 'asks': [{'price': p}]} for p in prices]
@@ -120,7 +128,7 @@ def evaluate_r14_for_bot(
                             "bot_id": bot_r.get('id') or bot_r.get('bot_id'),
                             "ticker": trade_d.get('ticker'),
                             "direction": _sig,
-                            "order_type": "limit",
+                            "order_type": bot_r.get('buy_order_type') if _sig == 'buy' else bot_r.get('sell_order_type') or 'limit',
                             "qty": bot_r.get('order_size_value', 1.0),
                             "price": _sp,
                             "limit_price": _lp,
@@ -195,7 +203,15 @@ async def evaluate_standalone_r14(ibkr_live_state: dict):
                     _r14_res4 = _r14_obh2(_r14_tick4, start=_r14_start4, end=_r14_end4, max_points=30) or {}
                     _r14_pts4 = _r14_res4.get('points') or []
 
-                    # Fallback to rolling live price list if OB history from SQLite is empty
+                    # Fallback 1: if last 60s of order-book history is empty, try querying the last 1 hour
+                    if not _r14_pts4:
+                        try:
+                            _r14_res4 = _r14_obh2(_r14_tick4, max_points=30) or {}
+                            _r14_pts4 = _r14_res4.get('points') or []
+                        except Exception:
+                            pass
+
+                    # Fallback 2: to rolling live price list if OB history from SQLite is empty
                     if not _r14_pts4 and _r14_tick4 in ibkr_live_state:
                         prices = ibkr_live_state[_r14_tick4].get('prices') or []
                         _r14_pts4 = [{'bids': [{'price': p}], 'asks': [{'price': p}]} for p in prices]
@@ -246,7 +262,7 @@ async def evaluate_standalone_r14(ibkr_live_state: dict):
                                             "bot_id": br.get('id') or br.get('bot_id'),
                                             "ticker": td.get('ticker'),
                                             "direction": sg,
-                                            "order_type": "limit",
+                                            "order_type": br.get('buy_order_type') if sg == 'buy' else br.get('sell_order_type') or 'limit',
                                             "qty": br.get('order_size_value', 1.0),
                                             "price": sp,
                                             "limit_price": lp,
