@@ -1,29 +1,26 @@
-"""WebSocket broadcaster for real-time updates."""
+"""WebSocket broadcaster loop coordinator."""
 
 import asyncio
-import base64
 import json
-import os
-from datetime import datetime
-
+import logging
 from .manager import manager
 from config.time_utils import current_timestamp
+from .broadcaster_worker import build_workers_payload
+from .broadcaster_r14 import evaluate_r14_for_bot, evaluate_standalone_r14
+
+logger = logging.getLogger(__name__)
 
 
 async def broadcaster_loop():
     """
     Background task that broadcasts status updates to all connected WebSocket clients.
-    
-    This function runs continuously and:
-    - Collects status from all capture services
-    - Gathers screenshots and encodes them as base64
-    - Updates trader signals automatically
-    - Broadcasts combined payload to all WebSocket clients
-    - Cleans up old screenshots to save disk space
+
+    - Collects workers status and screenshot payloads
+    - Evaluates Rule 14 triggers
+    - Evaluates rules on the TradeSimulator engine
+    - Manages live IBKR order dispatches
+    - Broadcasts the combined state to Web UIs
     """
-    # Import here to avoid circular imports
-    from services.capture_manager import manager_services
-    from services.bot_registry import list_bots_by_hwnd
     from trading.simulator import trader
     from db.queries import get_app_settings
     from ibkr.order_book import (
@@ -36,8 +33,8 @@ async def broadcaster_loop():
     )
 
     ibkr_last_prices = {}
-    # Per-ticker live state for frontend sparkline: {ticker: {prices, trend, last_signal}}
     ibkr_live_state: dict = {}
+
     while True:
         try:
             signal_source = "screenshot"
@@ -48,767 +45,352 @@ async def broadcaster_loop():
                     signal_source = "screenshot"
             except Exception:
                 signal_source = "screenshot"
+                cfg = {}
 
-            # collect per-worker statuses and screenshots
+            # Step 1: Collect workers status and screenshots payload
+            raw_workers = build_workers_payload()
             workers_payload = []
-            try:
-                for hwnd, svc in manager_services.iter_services():
-                    try:
-                        st = svc.get_status()
-                    except Exception:
-                        st = {}
-                    last = (st.get('last_result') or {}) if isinstance(st, dict) else {}
-                    image_b64 = None
-                    image_mime = None
-                    img_path = last.get('image_path')
-                    if img_path and os.path.exists(img_path):
-                        try:
-                            with open(img_path, 'rb') as f:
-                                image_b64 = base64.b64encode(f.read()).decode('ascii')
-                            if str(img_path).lower().endswith(('.jpg', '.jpeg')):
-                                image_mime = 'image/jpeg'
-                            else:
-                                image_mime = 'image/png'
-                        except Exception:
-                            image_b64 = None
 
-                    # pull session bot settings for this hwnd (fallback to DB when empty)
-                    bot_info = None
-                    bot_list = []
-                    try:
-                        bot_list = list_bots_by_hwnd(int(hwnd))
-                        bot_info = bot_list[0] if bot_list else None
-                    except Exception:
-                        bot_info = None
-                        bot_list = []
-                    if not bot_list:
+            # Step 2: Process signals and evaluate rules per active worker
+            for item in raw_workers:
+                hwnd = item['hwnd']
+                st = item['status']
+                image_b64 = item['screenshot_b64']
+                image_mime = item['screenshot_mime']
+                last = item['last_result']
+                bot_info = item['bot']
+                bot_list = item['bots']
+                svc = item['svc']
+
+                # Add serializable entries to output payload
+                workers_payload.append({
+                    'hwnd': hwnd,
+                    'status': st,
+                    'screenshot_b64': image_b64,
+                    'screenshot_mime': image_mime,
+                    'last_result': last,
+                    'bot': bot_info,
+                    'bots': bot_list,
+                })
+
+                # Extract screenshot-based trends and prices
+                raw_trend = last.get('trend') or ''
+                screenshot_trend = str(raw_trend).strip().lower()
+                if screenshot_trend in ('uptrend', 'bullish', 'rise', 'rising'):
+                    screenshot_trend = 'up'
+                elif screenshot_trend in ('downtrend', 'bearish', 'fall', 'falling'):
+                    screenshot_trend = 'down'
+
+                screenshot_price = last.get('price') or last.get('price_value') or None
+                screenshot_ticker = last.get('ticker') or None
+
+                for bot in bot_list:
+                    bot_ticker = bot.get('ticker') or screenshot_ticker
+                    if not bot_ticker:
+                        continue
+                    if bool(bot.get('trading_paused')):
+                        continue
+
+                    bot_id = bot.get('bot_id') or bot.get('id')
+                    bot_name = bot.get('name')
+
+                    signal_price = screenshot_price
+                    signal_trend = screenshot_trend
+                    rsi_bollinger_history = None
+                    rsi_bollinger_avg_volume = None
+                    rule_11_history = None
+                    rule_12_price_history = None
+                    rule_12_price_volume_history = None
+                    rule_12_top_book = None
+                    rule_12_depth_snapshot = None
+
+                    # If ibkr is the signal source, pull live data from TWS/Gateway
+                    if signal_source == 'ibkr':
+                        ibkr_ticker = str(bot_ticker).strip().upper()
+                        ibkr_price = None
                         try:
-                            from db.queries import get_bot_db_entry
-                            bot_db_row = get_bot_db_entry(int(hwnd))
-                            if isinstance(bot_db_row, dict) and bot_db_row:
-                                bot_info = bot_db_row
-                                bot_list = [bot_db_row]
+                            await ensure_top_of_book(ibkr_ticker)
+                            ibkr_price = get_mid_price(ibkr_ticker)
+                        except Exception:
+                            ibkr_price = None
+
+                        if ibkr_price is None:
+                            continue
+
+                        signal_price = ibkr_price
+                        ibkr_last_prices[ibkr_ticker] = ibkr_price
+                        rsi_bollinger_history = get_price_history(ibkr_ticker)
+
+                        # Slope-based trend detection
+                        try:
+                            from trading.rule13 import _compute_slope_pct
+                            _trend_lookback = int(cfg.get('ibkr_trend_lookback') or 5)
+                            _trend_threshold = float(cfg.get('ibkr_trend_threshold_pct') or 0.0003)
+                            _prices = rsi_bollinger_history or []
+                            _slope = _compute_slope_pct(_prices, _trend_lookback)
+                            if _slope is None:
+                                signal_trend = ''
+                            elif _slope > _trend_threshold:
+                                signal_trend = 'up'
+                            elif _slope < -_trend_threshold:
+                                signal_trend = 'down'
+                            else:
+                                signal_trend = ''
+                        except Exception:
+                            # Fallback: single-tick price delta
+                            _prev = ibkr_last_prices.get(ibkr_ticker)
+                            if _prev is not None:
+                                if ibkr_price > _prev:
+                                    signal_trend = 'up'
+                                elif ibkr_price < _prev:
+                                    signal_trend = 'down'
+                                else:
+                                    signal_trend = ''
+                            else:
+                                signal_trend = ''
+
+                        try:
+                            lookback_s = int(bot.get('rule_12_lookback_seconds') or 10)
+                        except Exception:
+                            lookback_s = 10
+                        rule_12_price_history = rsi_bollinger_history
+                        rule_12_price_volume_history = get_price_volume_history(ibkr_ticker, lookback_seconds=lookback_s)
+                        rule_12_top_book = get_top_of_book(ibkr_ticker)
+                        rule_12_depth_snapshot = get_snapshot(ibkr_ticker)
+
+                        try:
+                            rule_11_history = get_price_volume_history(ibkr_ticker, lookback_seconds=int(bot.get('rule_11_window_seconds') or 5))
+                        except Exception:
+                            rule_11_history = None
+                        try:
+                            rsi_bollinger_avg_volume = None
+                            if isinstance(rule_11_history, list) and rule_11_history:
+                                vols = [float(x.get('volume') or 0.0) for x in rule_11_history]
+                                rsi_bollinger_avg_volume = sum(vols) / len(vols) if vols else None
+                        except Exception:
+                            rsi_bollinger_avg_volume = None
+
+                        try:
+                            _tick_prices = list(rsi_bollinger_history or [])[-60:]
+                            ibkr_live_state[ibkr_ticker] = {
+                                'ticker': ibkr_ticker,
+                                'prices': _tick_prices,
+                                'trend': signal_trend,
+                                'price': signal_price,
+                                'last_signal': ibkr_live_state.get(ibkr_ticker, {}).get('last_signal'),
+                            }
                         except Exception:
                             pass
 
-                    # update trader auto signals if worker produced price/ticker
+                    # Rule 14 Evaluation
+                    r14_fired = False
                     try:
-                        raw_trend = last.get('trend') or ''
-                        screenshot_trend = str(raw_trend).strip().lower()
-                        if screenshot_trend in ('uptrend', 'bullish', 'rise', 'rising'):
-                            screenshot_trend = 'up'
-                        elif screenshot_trend in ('downtrend', 'bearish', 'fall', 'falling'):
-                            screenshot_trend = 'down'
+                        r14_fired = evaluate_r14_for_bot(hwnd, bot, bot_id, signal_price, ibkr_live_state)
+                    except Exception as re:
+                        logger.warning(f"[R14 evaluation error] {re}")
 
-                        screenshot_price = last.get('price') or last.get('price_value') or None
-                        screenshot_ticker = last.get('ticker') or None
+                    if r14_fired:
+                        # Skip other rules if R14 trade was placed
+                        continue
 
-                        rule_enabled = False
-                        rule2_enabled = False
-                        rule3_enabled = False
-                        rule4_enabled = True
-                        rule5_enabled = False
-                        rule6_enabled = False
-                        rule7_enabled = False
-                        rule8_enabled = False
-                        rule9_enabled = False
-                        tp_amount = None
-                        sl_amount = None
-                        rule3_drop = None
-                        rule4_start = None
-                        rule4_end = None
-                        rule4_days = None
-                        rule5_down = None
-                        rule5_reversal = None
-                        rule5_scalp = None
-                        rule6_down = None
-                        rule6_profit = None
-                        rule7_up = None
-                        rule8_buy = None
-                        rule8_sell = None
-                        rule9_amount = None
-                        rule9_flips = None
-                        rule9_window = None
-                        rsi_bollinger_enabled = False
-                        rsi_bollinger_rsi_length = None
-                        rsi_bollinger_rsi_threshold = None
-                        rsi_bollinger_bb_length = None
-                        rsi_bollinger_bb_stdev = None
-                        rsi_bollinger_profit_pct = None
-                        rsi_bollinger_stop_pct = None
-                        rsi_bollinger_stop_enabled = None
-                        rsi_bollinger_strict_enabled = None
-                        rsi_bollinger_strict_bars = None
-                        rsi_bollinger_bounce_enabled = None
-                        rsi_bollinger_bounce_pct = None
-                        rsi_bollinger_cooldown_enabled = None
-                        rsi_bollinger_cooldown_minutes = None
-                        rsi_bollinger_time_exit_enabled = None
-                        rsi_bollinger_time_exit_minutes = None
-                        rsi_bollinger_only_profit = None
-                        rule_12_enabled = False
-                        rule_12_buy_threshold = None
-                        rule_12_sell_threshold = None
-                        rule_12_min_trades = None
-                        rule_12_lookback_seconds = None
-                        rule_12_weight_tape = None
-                        rule_12_weight_book = None
-                        rule_12_weight_trend = None
-                        rule_12_weight_momentum = None
-                        rule_12_weight_volume = None
-                        rule_12_weight_spread = None
-                        rule_12_weight_pullback = None
-                        rule_12_momentum_scale = None
-                        rule_12_spread_tight_pct = None
+                    if signal_price is None:
+                        continue
 
-                        for bot in bot_list:
-                            try:
-                                bot_ticker = bot.get('ticker') or screenshot_ticker
-                                if not bot_ticker:
+                    _ibkr_mode = signal_source == 'ibkr'
+
+                    # Process simulator rules (Rules 1-12)
+                    try:
+                        before_total = trader.core._total_logged
+                        trader.on_signal(
+                            signal_trend,
+                            signal_price,
+                            bot_ticker,
+                            auto=True,
+                            rule_1_enabled=bool(bot.get('rule_1_enabled')),
+                            take_profit_amount=bot.get('take_profit_amount'),
+                            rule_2_enabled=bool(bot.get('rule_2_enabled')),
+                            stop_loss_amount=bot.get('stop_loss_amount'),
+                            rule_3_enabled=bool(bot.get('rule_3_enabled')),
+                            rule_3_drop_count=bot.get('rule_3_drop_count'),
+                            rule_4_enabled=bool(bot.get('rule_4_enabled', 1)),
+                            rule_4_start_time=bot.get('rule_4_start_time'),
+                            rule_4_end_time=bot.get('rule_4_end_time'),
+                            rule_4_days=bot.get('rule_4_days'),
+                            rule_5_enabled=bool(bot.get('rule_5_enabled')),
+                            rule_5_down_minutes=bot.get('rule_5_down_minutes'),
+                            rule_5_reversal_amount=bot.get('rule_5_reversal_amount'),
+                            rule_5_scalp_amount=bot.get('rule_5_scalp_amount'),
+                            rule_6_enabled=bool(bot.get('rule_6_enabled')),
+                            rule_6_down_minutes=bot.get('rule_6_down_minutes'),
+                            rule_6_profit_amount=bot.get('rule_6_profit_amount'),
+                            rule_7_enabled=bool(bot.get('rule_7_enabled')),
+                            rule_7_up_minutes=bot.get('rule_7_up_minutes'),
+                            rule_8_enabled=bool(bot.get('rule_8_enabled')),
+                            rule_8_buy_offset=bot.get('rule_8_buy_offset'),
+                            rule_8_sell_offset=bot.get('rule_8_sell_offset'),
+                            rule_9_enabled=bool(bot.get('rule_9_enabled')),
+                            rule_9_amount=bot.get('rule_9_amount'),
+                            rule_9_flips=bot.get('rule_9_flips'),
+                            rule_9_window_minutes=bot.get('rule_9_window_minutes'),
+                            rsi_bollinger_enabled=bool(bot.get('rsi_bollinger_enabled')) if _ibkr_mode else False,
+                            rsi_bollinger_rsi_length=bot.get('rsi_bollinger_rsi_length'),
+                            rsi_bollinger_rsi_threshold=bot.get('rsi_bollinger_rsi_threshold'),
+                            rsi_bollinger_bb_length=bot.get('rsi_bollinger_bb_length'),
+                            rsi_bollinger_bb_stdev=bot.get('rsi_bollinger_bb_stdev'),
+                            rsi_bollinger_profit_pct=bot.get('rsi_bollinger_profit_pct'),
+                            rsi_bollinger_stop_pct=bot.get('rsi_bollinger_stop_pct'),
+                            rsi_bollinger_stop_enabled=bot.get('rsi_bollinger_stop_enabled'),
+                            rsi_bollinger_strict_enabled=bot.get('rsi_bollinger_strict_enabled'),
+                            rsi_bollinger_strict_bars=bot.get('rsi_bollinger_strict_bars'),
+                            rsi_bollinger_bounce_enabled=bot.get('rsi_bollinger_bounce_enabled'),
+                            rsi_bollinger_bounce_pct=bot.get('rsi_bollinger_bounce_pct'),
+                            rsi_bollinger_cooldown_enabled=bot.get('rsi_bollinger_cooldown_enabled'),
+                            rsi_bollinger_cooldown_minutes=bot.get('rsi_bollinger_cooldown_minutes'),
+                            rsi_bollinger_time_exit_enabled=bot.get('rsi_bollinger_time_exit_enabled'),
+                            rsi_bollinger_time_exit_minutes=bot.get('rsi_bollinger_time_exit_minutes'),
+                            rsi_bollinger_only_profit=bot.get('rsi_bollinger_only_profit'),
+                            rsi_bollinger_price_history=rsi_bollinger_history,
+                            rsi_bollinger_daily_max_loss=bot.get('rsi_bollinger_daily_max_loss'),
+                            rsi_bollinger_max_losses_per_day=bot.get('rsi_bollinger_max_losses_per_day'),
+                            rsi_bollinger_size_multiplier=bot.get('rsi_bollinger_size_multiplier'),
+                            rsi_bollinger_trend_enabled=bot.get('rsi_bollinger_trend_enabled'),
+                            rsi_bollinger_trend_ma=bot.get('rsi_bollinger_trend_ma'),
+                            rsi_bollinger_liquidity_enabled=bot.get('rsi_bollinger_liquidity_enabled'),
+                            rsi_bollinger_min_avg_volume=bot.get('rsi_bollinger_min_avg_volume'),
+                            rsi_bollinger_avg_volume=rsi_bollinger_avg_volume,
+                            rsi_bollinger_trailing_stop_enabled=bot.get('rsi_bollinger_trailing_stop_enabled'),
+                            rsi_bollinger_trailing_stop_pct=bot.get('rsi_bollinger_trailing_stop_pct'),
+                            rsi_bollinger_rsi_slope_enabled=bot.get('rsi_bollinger_rsi_slope_enabled'),
+                            rsi_bollinger_min_reentry_seconds=bot.get('rsi_bollinger_min_reentry_seconds'),
+                            rule_11_enabled=bool(bot.get('rule_11_enabled')) if _ibkr_mode else False,
+                            rule_11_price_jump=bot.get('rule_11_price_jump'),
+                            rule_11_window_seconds=bot.get('rule_11_window_seconds'),
+                            rule_11_volume_threshold=bot.get('rule_11_volume_threshold'),
+                            rule_11_limit_offset=bot.get('rule_11_limit_offset'),
+                            rule_11_price_history=rule_11_history,
+                            rule_11_profit_pct=bot.get('rule_11_profit_pct'),
+                            rule_11_stop_pct=bot.get('rule_11_stop_pct'),
+                            rule_11_stop_enabled=bot.get('rule_11_stop_enabled'),
+                            rule_11_only_profit=bot.get('rule_11_only_profit'),
+                            rule_11_trailing_stop_enabled=bot.get('rule_11_trailing_stop_enabled'),
+                            rule_11_trailing_stop_pct=bot.get('rule_11_trailing_stop_pct'),
+                            rule_11_cooldown_enabled=bot.get('rule_11_cooldown_enabled'),
+                            rule_11_cooldown_minutes=bot.get('rule_11_cooldown_minutes'),
+                            rule_11_size_multiplier=bot.get('rule_11_size_multiplier'),
+                            rule_11_daily_max_loss=bot.get('rule_11_daily_max_loss'),
+                            rule_11_max_losses_per_day=bot.get('rule_11_max_losses_per_day'),
+                            rule_11_trend_enabled=bot.get('rule_11_trend_enabled'),
+                            rule_11_trend_ma=bot.get('rule_11_trend_ma'),
+                            rule_11_liquidity_enabled=bot.get('rule_11_liquidity_enabled'),
+                            rule_11_min_avg_volume=bot.get('rule_11_min_avg_volume'),
+                            rule_11_min_tick_density=bot.get('rule_11_min_tick_density'),
+                            rule_12_enabled=bool(bot.get('rule_12_enabled')) if _ibkr_mode else False,
+                            rule_12_buy_threshold=bot.get('rule_12_buy_threshold'),
+                            rule_12_sell_threshold=bot.get('rule_12_sell_threshold'),
+                            rule_12_min_trades=bot.get('rule_12_min_trades'),
+                            rule_12_price_history=rule_12_price_history,
+                            rule_12_price_volume_history=rule_12_price_volume_history,
+                            rule_12_top_book=rule_12_top_book,
+                            rule_12_depth_snapshot=rule_12_depth_snapshot,
+                            rule_12_weight_tape=bot.get('rule_12_weight_tape'),
+                            rule_12_weight_book=bot.get('rule_12_weight_book'),
+                            rule_12_weight_trend=bot.get('rule_12_weight_trend'),
+                            rule_12_weight_momentum=bot.get('rule_12_weight_momentum'),
+                            rule_12_weight_volume=bot.get('rule_12_weight_volume'),
+                            rule_12_weight_spread=bot.get('rule_12_weight_spread'),
+                            rule_12_weight_pullback=bot.get('rule_12_weight_pullback'),
+                            rule_12_momentum_scale=bot.get('rule_12_momentum_scale'),
+                            rule_12_spread_tight_pct=bot.get('rule_12_spread_tight_pct'),
+                            default_trade_enabled=bool(bot.get('default_trade_enabled', True)),
+                            bot_id=bot_id,
+                            bot_name=bot_name,
+                        )
+                        after_total = trader.core._total_logged
+                        new_trade_count = after_total - before_total
+                        if new_trade_count > 0:
+                            for ev in trader.trade_history[-new_trade_count:]:
+                                if bot_id and ev.get('bot_id') != bot_id:
                                     continue
-                                trading_paused = bool(bot.get('trading_paused'))
-                                rule_enabled = bool(bot.get('rule_1_enabled'))
-                                rule2_enabled = bool(bot.get('rule_2_enabled'))
-                                rule3_enabled = bool(bot.get('rule_3_enabled'))
-                                rule4_enabled = bool(bot.get('rule_4_enabled', 1))
-                                rule4_start = bot.get('rule_4_start_time')
-                                rule4_end = bot.get('rule_4_end_time')
-                                rule4_days = bot.get('rule_4_days')
-                                rule5_enabled = bool(bot.get('rule_5_enabled'))
-                                rule6_enabled = bool(bot.get('rule_6_enabled'))
-                                rule7_enabled = bool(bot.get('rule_7_enabled'))
-                                rule8_enabled = bool(bot.get('rule_8_enabled'))
-                                rule9_enabled = bool(bot.get('rule_9_enabled'))
-                                tp_amount = bot.get('take_profit_amount')
-                                sl_amount = bot.get('stop_loss_amount')
-                                rule3_drop = bot.get('rule_3_drop_count')
-                                rule5_down = bot.get('rule_5_down_minutes')
-                                rule5_reversal = bot.get('rule_5_reversal_amount')
-                                rule5_scalp = bot.get('rule_5_scalp_amount')
-                                rule6_down = bot.get('rule_6_down_minutes')
-                                rule6_profit = bot.get('rule_6_profit_amount')
-                                rule7_up = bot.get('rule_7_up_minutes')
-                                rule8_buy = bot.get('rule_8_buy_offset')
-                                rule8_sell = bot.get('rule_8_sell_offset')
-                                rule9_amount = bot.get('rule_9_amount')
-                                rule9_flips = bot.get('rule_9_flips')
-                                rule9_window = bot.get('rule_9_window_minutes')
-                                rsi_bollinger_enabled = bool(bot.get('rsi_bollinger_enabled'))
-                                rsi_bollinger_rsi_length = bot.get('rsi_bollinger_rsi_length')
-                                rsi_bollinger_rsi_threshold = bot.get('rsi_bollinger_rsi_threshold')
-                                rsi_bollinger_bb_length = bot.get('rsi_bollinger_bb_length')
-                                rsi_bollinger_bb_stdev = bot.get('rsi_bollinger_bb_stdev')
-                                rsi_bollinger_profit_pct = bot.get('rsi_bollinger_profit_pct')
-                                rsi_bollinger_stop_pct = bot.get('rsi_bollinger_stop_pct')
-                                rsi_bollinger_stop_enabled = bot.get('rsi_bollinger_stop_enabled')
-                                rsi_bollinger_strict_enabled = bot.get('rsi_bollinger_strict_enabled')
-                                rsi_bollinger_strict_bars = bot.get('rsi_bollinger_strict_bars')
-                                rsi_bollinger_bounce_enabled = bot.get('rsi_bollinger_bounce_enabled')
-                                rsi_bollinger_bounce_pct = bot.get('rsi_bollinger_bounce_pct')
-                                rsi_bollinger_cooldown_enabled = bot.get('rsi_bollinger_cooldown_enabled')
-                                rsi_bollinger_cooldown_minutes = bot.get('rsi_bollinger_cooldown_minutes')
-                                rsi_bollinger_time_exit_enabled = bot.get('rsi_bollinger_time_exit_enabled')
-                                rsi_bollinger_time_exit_minutes = bot.get('rsi_bollinger_time_exit_minutes')
-                                rsi_bollinger_only_profit = bot.get('rsi_bollinger_only_profit')
-                                rsi_bollinger_daily_max_loss = bot.get('rsi_bollinger_daily_max_loss')
-                                rsi_bollinger_max_losses_per_day = bot.get('rsi_bollinger_max_losses_per_day')
-                                rsi_bollinger_size_multiplier = bot.get('rsi_bollinger_size_multiplier')
-                                rsi_bollinger_trend_enabled = bot.get('rsi_bollinger_trend_enabled')
-                                rsi_bollinger_trend_ma = bot.get('rsi_bollinger_trend_ma')
-                                rsi_bollinger_liquidity_enabled = bot.get('rsi_bollinger_liquidity_enabled')
-                                rsi_bollinger_min_avg_volume = bot.get('rsi_bollinger_min_avg_volume')
-                                rsi_bollinger_trailing_stop_enabled = bot.get('rsi_bollinger_trailing_stop_enabled')
-                                rsi_bollinger_trailing_stop_pct = bot.get('rsi_bollinger_trailing_stop_pct')
-                                rsi_bollinger_rsi_slope_enabled = bot.get('rsi_bollinger_rsi_slope_enabled')
-                                rsi_bollinger_min_reentry_seconds = bot.get('rsi_bollinger_min_reentry_seconds')
-                                # Rule 11 settings
-                                rule_11_enabled = bool(bot.get('rule_11_enabled'))
-                                rule_11_price_jump = bot.get('rule_11_price_jump')
-                                rule_11_window_seconds = bot.get('rule_11_window_seconds')
-                                rule_11_volume_threshold = bot.get('rule_11_volume_threshold')
-                                rule_11_limit_offset = bot.get('rule_11_limit_offset')
-                                rule_11_profit_pct = bot.get('rule_11_profit_pct')
-                                rule_11_stop_pct = bot.get('rule_11_stop_pct')
-                                rule_11_stop_enabled = bot.get('rule_11_stop_enabled')
-                                rule_11_only_profit = bot.get('rule_11_only_profit')
-                                rule_11_trailing_stop_enabled = bot.get('rule_11_trailing_stop_enabled')
-                                rule_11_trailing_stop_pct = bot.get('rule_11_trailing_stop_pct')
-                                rule_11_cooldown_enabled = bot.get('rule_11_cooldown_enabled')
-                                rule_11_cooldown_minutes = bot.get('rule_11_cooldown_minutes')
-                                rule_11_size_multiplier = bot.get('rule_11_size_multiplier')
-                                rule_11_daily_max_loss = bot.get('rule_11_daily_max_loss')
-                                rule_11_max_losses_per_day = bot.get('rule_11_max_losses_per_day')
-                                rule_11_trend_enabled = bot.get('rule_11_trend_enabled')
-                                rule_11_trend_ma = bot.get('rule_11_trend_ma')
-                                rule_11_liquidity_enabled = bot.get('rule_11_liquidity_enabled')
-                                rule_11_min_avg_volume = bot.get('rule_11_min_avg_volume')
-                                rule_11_min_tick_density = bot.get('rule_11_min_tick_density')
-                                rule_12_enabled = bool(bot.get('rule_12_enabled'))
-                                rule_12_buy_threshold = bot.get('rule_12_buy_threshold')
-                                rule_12_sell_threshold = bot.get('rule_12_sell_threshold')
-                                rule_12_min_trades = bot.get('rule_12_min_trades')
-                                rule_12_lookback_seconds = bot.get('rule_12_lookback_seconds')
-                                rule_12_weight_tape = bot.get('rule_12_weight_tape')
-                                rule_12_weight_book = bot.get('rule_12_weight_book')
-                                rule_12_weight_trend = bot.get('rule_12_weight_trend')
-                                rule_12_weight_momentum = bot.get('rule_12_weight_momentum')
-                                rule_12_weight_volume = bot.get('rule_12_weight_volume')
-                                rule_12_weight_spread = bot.get('rule_12_weight_spread')
-                                rule_12_weight_pullback = bot.get('rule_12_weight_pullback')
-                                rule_12_momentum_scale = bot.get('rule_12_momentum_scale')
-                                rule_12_spread_tight_pct = bot.get('rule_12_spread_tight_pct')
-                                default_trade = bot.get('default_trade_enabled', True)
-                                if default_trade is None:
-                                    default_trade = True
-                                default_trade = bool(default_trade)
-                                bot_id = bot.get('bot_id') or bot.get('id')
-                                bot_name = bot.get('name')
-                            except Exception:
-                                continue
-
-                            if trading_paused:
-                                continue
-
-                            signal_price = screenshot_price
-                            signal_trend = screenshot_trend
-                            rsi_bollinger_history = None
-                            rsi_bollinger_avg_volume = None
-                            rule_11_history = None
-                            rule_12_price_history = None
-                            rule_12_price_volume_history = None
-                            rule_12_top_book = None
-                            rule_12_depth_snapshot = None
-
-                            if signal_source == 'ibkr':
-                                ibkr_ticker = str(bot_ticker).strip().upper()
-                                ibkr_price = None
+                                direction = ev.get('direction')
                                 try:
-                                    await ensure_top_of_book(ibkr_ticker)
-                                    ibkr_price = get_mid_price(ibkr_ticker)
-                                except Exception:
-                                    ibkr_price = None
-
-                                if ibkr_price is None:
-                                    continue
-
-                                signal_price = ibkr_price
-                                ibkr_last_prices[ibkr_ticker] = ibkr_price
-
-                                rsi_bollinger_history = get_price_history(ibkr_ticker)
-
-                                # ── Slope-based trend detection ────────────────────────────────
-                                # Uses _compute_slope_pct() from Rule 13 — same math, same quality
-                                # as the Robinhood chart direction reader, but from live IBKR ticks.
-                                #
-                                # Configurable via app settings (optional):
-                                #   ibkr_trend_lookback       int   — how many price ticks to use
-                                #                                      (default: 5)
-                                #   ibkr_trend_threshold_pct  float — minimum slope to count as
-                                #                                      directional (default: 0.0003
-                                #                                      = 0.03% per lookback window)
-                                #
-                                # trend = 'up'   if slope > +threshold
-                                # trend = 'down' if slope < -threshold
-                                # trend = ''     if flat / not enough data yet
-                                # ─────────────────────────────────────────────────────────────────
-                                try:
-                                    from trading.rule13 import _compute_slope_pct
-                                    _trend_lookback   = int(cfg.get('ibkr_trend_lookback') or 5)
-                                    _trend_threshold  = float(cfg.get('ibkr_trend_threshold_pct') or 0.0003)
-                                    _prices           = rsi_bollinger_history or []
-                                    _slope            = _compute_slope_pct(_prices, _trend_lookback)
-                                    if _slope is None:
-                                        signal_trend = ''           # not enough history yet
-                                    elif _slope > _trend_threshold:
-                                        signal_trend = 'up'
-                                    elif _slope < -_trend_threshold:
-                                        signal_trend = 'down'
-                                    else:
-                                        signal_trend = ''           # flat — no directional signal
-                                except Exception:
-                                    # Fallback: single-tick delta (original behaviour)
-                                    _prev = ibkr_last_prices.get(ibkr_ticker)
-                                    if _prev is not None:
-                                        if ibkr_price > _prev:
-                                            signal_trend = 'up'
-                                        elif ibkr_price < _prev:
-                                            signal_trend = 'down'
-                                        else:
-                                            signal_trend = ''
-                                    else:
-                                        signal_trend = ''
-                                # ─────────────────────────────────────────────────────────────────
-
-                                try:
-                                    lookback_s = int(rule_12_lookback_seconds) if rule_12_lookback_seconds is not None else 10
-                                except Exception:
-                                    lookback_s = 10
-                                rule_12_price_history = rsi_bollinger_history
-                                rule_12_price_volume_history = get_price_volume_history(ibkr_ticker, lookback_seconds=lookback_s)
-                                rule_12_top_book = get_top_of_book(ibkr_ticker)
-                                rule_12_depth_snapshot = get_snapshot(ibkr_ticker)
-                                # price+volume history for Rule 11 and compute avg volume for liquidity checks
-                                try:
-                                    rule_11_history = get_price_volume_history(ibkr_ticker, lookback_seconds=int(rule_11_window_seconds) if rule_11_window_seconds else 5)
-                                except Exception:
-                                    rule_11_history = None
-                                try:
-                                    rsi_bollinger_avg_volume = None
-                                    if isinstance(rule_11_history, list) and rule_11_history:
-                                        vols = [float(x.get('volume') or 0.0) for x in rule_11_history]
-                                        rsi_bollinger_avg_volume = sum(vols) / len(vols) if vols else None
-                                except Exception:
-                                    rsi_bollinger_avg_volume = None
-
-
-                                # ── Record live state for frontend sparkline ──────────────────
-                                # Captures last 60 price ticks + computed slope trend so the
-                                # preview panel can draw a live sparkline and show the direction.
-                                try:
-                                    _tick_prices = list(rsi_bollinger_history or [])[-60:]
-                                    ibkr_live_state[ibkr_ticker] = {
-                                        'ticker': ibkr_ticker,
-                                        'prices': _tick_prices,
-                                        'trend': signal_trend,          # 'up' | 'down' | ''
-                                        'price': signal_price,
-                                        'last_signal': ibkr_live_state.get(ibkr_ticker, {}).get('last_signal'),
-                                    }
+                                    _ev_ticker = str(ev.get('ticker') or bot_ticker or '').upper()
+                                    if _ev_ticker and direction in ('buy', 'sell'):
+                                        if _ev_ticker in ibkr_live_state:
+                                            ibkr_live_state[_ev_ticker]['last_signal'] = {
+                                                'direction': direction,
+                                                'price': ev.get('price'),
+                                                'ts': ev.get('ts'),
+                                            }
                                 except Exception:
                                     pass
-                                # ─────────────────────────────────────────────────────────────
 
-                                # (R14 handled below — after ibkr block — so it works in all signal modes)
-
-                            # ── Rule 14: History Graph Trend Auto-Trader ──────────────────
-                            # Runs in BOTH screenshot and ibkr modes — reads from the order-book
-                            # history DB which is captured independently of signal_source.
-                            try:
-                                from trading.rule14 import (
-                                    get_r14_state as _get_r14,
-                                    maybe_rule14_signal as _maybe_r14,
-                                    r14_state_for_frontend as _r14_fe,
-                                    record_order_placed as _r14_record_placed,
-                                    record_order_fill as _r14_record_fill,
-                                )
-                                from ibkr.order_book_history import get_order_book_history as _get_obh
-                                import time as _r14_time
-                                from datetime import datetime as _r14_dt, timezone as _r14_tz
-
-                                _r14_ticker = str(bot_ticker or '').strip().upper()
-                                _r14_s = _get_r14(int(hwnd))
-
-                                if _r14_ticker and _r14_s.enabled:
-                                    # Fetch last 60 seconds of order-book history points
-                                    _r14_now = _r14_time.time()
-                                    _r14_end_str = _r14_dt.fromtimestamp(_r14_now, tz=_r14_tz.utc).isoformat().replace('+00:00', 'Z')
-                                    _r14_start_str = _r14_dt.fromtimestamp(_r14_now - 60, tz=_r14_tz.utc).isoformat().replace('+00:00', 'Z')
-
-                                    _r14_res = _get_obh(
-                                        _r14_ticker,
-                                        start=_r14_start_str,
-                                        end=_r14_end_str,
-                                        max_points=30,
-                                    ) or {}
-                                    _r14_history = _r14_res.get('points') or []
-                                    _r14_sig = _maybe_r14(int(hwnd), _r14_history)
-
-                                    # If order-book history had no points yet, fall back
-                                    # to signal_price so the price display is never blank.
-                                    if _r14_s.last_mid_price is None and signal_price:
-                                        try:
-                                            _r14_s.last_mid_price = float(signal_price)
-                                        except Exception:
-                                            pass
-
-                                    # Always push R14 state into ibkr_live_state (works in all modes)
-                                    if _r14_ticker in ibkr_live_state:
-                                        ibkr_live_state[_r14_ticker]['r14'] = _r14_fe(int(hwnd))
-                                    else:
-                                        ibkr_live_state[_r14_ticker] = {
-                                            'ticker': _r14_ticker,
-                                            'prices': [],
-                                            'trend': _r14_s.last_trend,
-                                            'price': signal_price,
-                                            'last_signal': None,
-                                            'r14': _r14_fe(int(hwnd)),
-                                        }
-
-                                    if _r14_sig in ('buy', 'sell'):
-                                        import asyncio as _r14_asyncio
-                                        from ibkr.order_router import handle_trade_event as _r14_hte
-                                        from db.queries import get_bot_db_entry as _get_bot_db
-                                        _r14_bot_db = _get_bot_db(int(hwnd)) or {}
-                                        _r14_bot_session = bot if isinstance(bot, dict) else {}
-                                        _r14_bot_row = {**_r14_bot_db, **_r14_bot_session}
-                                        _r14_sig_price = signal_price or _r14_s.last_mid_price or 0
-                                        _r14_trade = {
-                                            'direction': _r14_sig,
-                                            'ticker': _r14_ticker,
-                                            'price': _r14_sig_price,
-                                            'ts': str(_r14_time.time()),
-                                            'bot_id': bot_id,
-                                            'rule': 'R14',
-                                        }
-                                        _r14_lp = None
-                                        try:
-                                            _r14_lp = float(_r14_sig_price) if _r14_sig_price else None
-                                        except Exception:
-                                            pass
-                                        _r14_record_placed(int(hwnd), _r14_sig, _r14_sig_price or 0, _r14_lp)
-                                        ibkr_live_state[_r14_ticker]['r14'] = _r14_fe(int(hwnd))
-
-                                        async def _r14_fill_wrap(trade_d, bot_r, _hwnd, _sig, _sp, _lp):
-                                            from ibkr.order_router import handle_trade_event as _hte2
-                                            from trading.rule14 import record_order_fill as _rof
-                                            try:
-                                                await _hte2(trade_d, bot_r, _hwnd)
-                                                try:
-                                                    from db.queries import get_last_order_for_hwnd_ticker as _glo
-                                                    last_ord = _glo(_hwnd, trade_d.get('ticker', ''))
-                                                    if last_ord:
-                                                        _rof(_hwnd, _sig, _sp, _lp, last_ord.get('fill_price'),
-                                                             last_ord.get('status') == 'filled', last_ord.get('error_msg') or '')
-                                                    else:
-                                                        _rof(_hwnd, _sig, _sp, _lp, None, False, 'no order record')
-                                                except Exception as _fe:
-                                                    _rof(_hwnd, _sig, _sp, _lp, None, False, str(_fe))
-                                            except Exception as _oe:
-                                                _rof(_hwnd, _sig, _sp, _lp, None, False, str(_oe))
-
-                                        _r14_asyncio.create_task(
-                                            _r14_fill_wrap(_r14_trade, _r14_bot_row, int(hwnd),
-                                                           _r14_sig, _r14_sig_price or 0, _r14_lp)
-                                        )
-                                        ibkr_live_state[_r14_ticker]['last_signal'] = {
-                                            'direction': _r14_sig,
-                                            'price': signal_price,
-                                            'ts': str(_r14_time.time()),
-                                        }
-                                        # R14 fired — skip other rule processing
-                                        continue
-                            except Exception as _r14_outer_err:
-                                import logging as _log14
-                                _log14.getLogger(__name__).warning(f'[R14] broadcaster error: {_r14_outer_err}')
-                            # ─────────────────────────────────────────────────────────────
-
-                            if signal_price is None:
-                                continue
-
-                            # Rules 10/11/12 require live IBKR data — disable in screenshot mode
-                            _ibkr_mode = signal_source == 'ibkr'
-
-                            # Always call on_signal - Rule 1 now works alongside default logic
-                            try:
-                                # Use the monotonic _total_logged counter instead of
-                                # len(trade_history) so we detect new trades even when
-                                # the history list has just been compacted by the 1000-item
-                                # cap (after trimming before==after by length, breaking detection).
-                                before_total = trader.core._total_logged
-                                trader.on_signal(
-                                    signal_trend,
-                                    signal_price,
-                                    bot_ticker,
-                                    auto=True,
-                                    rule_1_enabled=rule_enabled,
-                                    take_profit_amount=tp_amount,
-                                    rule_2_enabled=rule2_enabled,
-                                    stop_loss_amount=sl_amount,
-                                    rule_3_enabled=rule3_enabled,
-                                    rule_3_drop_count=rule3_drop,
-                                    rule_4_enabled=rule4_enabled,
-                                    rule_4_start_time=rule4_start,
-                                    rule_4_end_time=rule4_end,
-                                    rule_4_days=rule4_days,
-                                    rule_5_enabled=rule5_enabled,
-                                    rule_5_down_minutes=rule5_down,
-                                    rule_5_reversal_amount=rule5_reversal,
-                                    rule_5_scalp_amount=rule5_scalp,
-                                    rule_6_enabled=rule6_enabled,
-                                    rule_6_down_minutes=rule6_down,
-                                    rule_6_profit_amount=rule6_profit,
-                                    rule_7_enabled=rule7_enabled,
-                                    rule_7_up_minutes=rule7_up,
-                                    rule_8_enabled=rule8_enabled,
-                                    rule_8_buy_offset=rule8_buy,
-                                    rule_8_sell_offset=rule8_sell,
-                                    rule_9_enabled=rule9_enabled,
-                                    rule_9_amount=rule9_amount,
-                                    rule_9_flips=rule9_flips,
-                                    rule_9_window_minutes=rule9_window,
-                                    rsi_bollinger_enabled=rsi_bollinger_enabled if _ibkr_mode else False,
-                                    rsi_bollinger_rsi_length=rsi_bollinger_rsi_length,
-                                    rsi_bollinger_rsi_threshold=rsi_bollinger_rsi_threshold,
-                                    rsi_bollinger_bb_length=rsi_bollinger_bb_length,
-                                    rsi_bollinger_bb_stdev=rsi_bollinger_bb_stdev,
-                                    rsi_bollinger_profit_pct=rsi_bollinger_profit_pct,
-                                    rsi_bollinger_stop_pct=rsi_bollinger_stop_pct,
-                                    rsi_bollinger_stop_enabled=rsi_bollinger_stop_enabled,
-                                    rsi_bollinger_strict_enabled=rsi_bollinger_strict_enabled,
-                                    rsi_bollinger_strict_bars=rsi_bollinger_strict_bars,
-                                    rsi_bollinger_bounce_enabled=rsi_bollinger_bounce_enabled,
-                                    rsi_bollinger_bounce_pct=rsi_bollinger_bounce_pct,
-                                    rsi_bollinger_cooldown_enabled=rsi_bollinger_cooldown_enabled,
-                                    rsi_bollinger_cooldown_minutes=rsi_bollinger_cooldown_minutes,
-                                    rsi_bollinger_time_exit_enabled=rsi_bollinger_time_exit_enabled,
-                                    rsi_bollinger_time_exit_minutes=rsi_bollinger_time_exit_minutes,
-                                    rsi_bollinger_only_profit=rsi_bollinger_only_profit,
-                                    rsi_bollinger_price_history=rsi_bollinger_history,
-                                    rsi_bollinger_daily_max_loss=rsi_bollinger_daily_max_loss,
-                                    rsi_bollinger_max_losses_per_day=rsi_bollinger_max_losses_per_day,
-                                    rsi_bollinger_size_multiplier=rsi_bollinger_size_multiplier,
-                                    rsi_bollinger_trend_enabled=rsi_bollinger_trend_enabled,
-                                    rsi_bollinger_trend_ma=rsi_bollinger_trend_ma,
-                                    rsi_bollinger_liquidity_enabled=rsi_bollinger_liquidity_enabled,
-                                    rsi_bollinger_min_avg_volume=rsi_bollinger_min_avg_volume,
-                                    rsi_bollinger_avg_volume=rsi_bollinger_avg_volume,
-                                    rsi_bollinger_trailing_stop_enabled=rsi_bollinger_trailing_stop_enabled,
-                                    rsi_bollinger_trailing_stop_pct=rsi_bollinger_trailing_stop_pct,
-                                    rsi_bollinger_rsi_slope_enabled=rsi_bollinger_rsi_slope_enabled,
-                                    rsi_bollinger_min_reentry_seconds=rsi_bollinger_min_reentry_seconds,
-                                    rule_11_enabled=rule_11_enabled if _ibkr_mode else False,
-                                    rule_11_price_jump=rule_11_price_jump,
-                                    rule_11_window_seconds=rule_11_window_seconds,
-                                    rule_11_volume_threshold=rule_11_volume_threshold,
-                                    rule_11_limit_offset=rule_11_limit_offset,
-                                    rule_11_price_history=rule_11_history,
-                                    rule_11_profit_pct=rule_11_profit_pct,
-                                    rule_11_stop_pct=rule_11_stop_pct,
-                                    rule_11_stop_enabled=rule_11_stop_enabled,
-                                    rule_11_only_profit=rule_11_only_profit,
-                                    rule_11_trailing_stop_enabled=rule_11_trailing_stop_enabled,
-                                    rule_11_trailing_stop_pct=rule_11_trailing_stop_pct,
-                                    rule_11_cooldown_enabled=rule_11_cooldown_enabled,
-                                    rule_11_cooldown_minutes=rule_11_cooldown_minutes,
-                                    rule_11_size_multiplier=rule_11_size_multiplier,
-                                    rule_11_daily_max_loss=rule_11_daily_max_loss,
-                                    rule_11_max_losses_per_day=rule_11_max_losses_per_day,
-                                    rule_11_trend_enabled=rule_11_trend_enabled,
-                                    rule_11_trend_ma=rule_11_trend_ma,
-                                    rule_11_liquidity_enabled=rule_11_liquidity_enabled,
-                                    rule_11_min_avg_volume=rule_11_min_avg_volume,
-                                    rule_11_min_tick_density=rule_11_min_tick_density,
-                                    rule_12_enabled=rule_12_enabled if _ibkr_mode else False,
-                                    rule_12_buy_threshold=rule_12_buy_threshold,
-                                    rule_12_sell_threshold=rule_12_sell_threshold,
-                                    rule_12_min_trades=rule_12_min_trades,
-                                    rule_12_price_history=rule_12_price_history,
-                                    rule_12_price_volume_history=rule_12_price_volume_history,
-                                    rule_12_top_book=rule_12_top_book,
-                                    rule_12_depth_snapshot=rule_12_depth_snapshot,
-                                    rule_12_weight_tape=rule_12_weight_tape,
-                                    rule_12_weight_book=rule_12_weight_book,
-                                    rule_12_weight_trend=rule_12_weight_trend,
-                                    rule_12_weight_momentum=rule_12_weight_momentum,
-                                    rule_12_weight_volume=rule_12_weight_volume,
-                                    rule_12_weight_spread=rule_12_weight_spread,
-                                    rule_12_weight_pullback=rule_12_weight_pullback,
-                                    rule_12_momentum_scale=rule_12_momentum_scale,
-                                    rule_12_spread_tight_pct=rule_12_spread_tight_pct,
-                                    default_trade_enabled=default_trade,
-                                    bot_id=bot_id,
-                                    bot_name=bot_name,
-                                )
-                                after_total = trader.core._total_logged
-                                new_trade_count = after_total - before_total
-                                if new_trade_count > 0:
+                                if hasattr(svc, 'handle_trade_event'):
                                     try:
-                                        for ev in trader.trade_history[-new_trade_count:]:
-                                            if bot_id and ev.get('bot_id') != bot_id:
-                                                continue
-                                            direction = ev.get('direction')
-                                            # Track last signal for frontend sparkline badge
-                                            try:
-                                                _ev_ticker = str(ev.get('ticker') or bot_ticker or '').upper()
-                                                if _ev_ticker and direction in ('buy', 'sell'):
-                                                    if _ev_ticker in ibkr_live_state:
-                                                        ibkr_live_state[_ev_ticker]['last_signal'] = {
-                                                            'direction': direction,
-                                                            'price': ev.get('price'),
-                                                            'ts': ev.get('ts'),
-                                                        }
-                                            except Exception:
-                                                pass
-                                            # Local screenshot/trade-recorder handler should never block
-                                            # IBKR dispatch. Keep it isolated and best-effort.
-                                            if hasattr(svc, 'handle_trade_event'):
-                                                try:
-                                                    svc.handle_trade_event(direction, ev.get('ticker'), ev.get('trade_id') or ev.get('ts'), ev.get('price'))
-                                                except Exception:
-                                                    pass
-                                            # After a sell, the trade folder is complete — attach all
-                                            # captured screenshots directly onto the trade record so
-                                            # the frontend receives them in the same WS message.
-                                            if direction == 'sell':
-                                                try:
-                                                    if hasattr(svc, 'trade_recorder'):
-                                                        shots = svc.trade_recorder.get_last_screenshots()
-                                                        if shots:
-                                                            ev['screenshots'] = shots
-                                                except Exception:
-                                                    pass
-                                            # Fire live IBKR order if bot has live trading enabled
-                                            try:
-                                                from db.queries import get_bot_db_entry
-                                                bot_db_row = get_bot_db_entry(int(hwnd)) or {}
-                                                bot_session_row = bot if isinstance(bot, dict) else {}
-
-                                                # UI saves bot settings in session memory (/bots/upsert), while
-                                                # DB can be stale. Merge with session taking precedence so IBKR
-                                                # uses the latest order size/type selected by the user.
-                                                bot_row_for_order = {**bot_db_row, **bot_session_row}
-                                                if bot_id and not bot_row_for_order.get('bot_id'):
-                                                    bot_row_for_order['bot_id'] = bot_id
-
-                                                live_enabled_raw = bot_row_for_order.get('live_trading_enabled')
-                                                if isinstance(live_enabled_raw, str):
-                                                    live_enabled = live_enabled_raw.strip().lower() in ('1', 'true', 'yes', 'on')
-                                                else:
-                                                    live_enabled = bool(live_enabled_raw)
-
-                                                if live_enabled:
-                                                    from ibkr.order_router import handle_trade_event as ibkr_handle
-                                                    # Create callback to get current signal for trend reversal detection
-                                                    # Captures trader and current context
-                                                    def make_signal_getter(t, tr):
-                                                        def get_signal():
-                                                            try:
-                                                                # Check if trader has current position and trend
-                                                                state = t.core.get_state(tr) if hasattr(t.core, 'get_state') else None
-                                                                if state and hasattr(state, 'last_direction'):
-                                                                    return state.last_direction
-                                                                return None
-                                                            except Exception:
-                                                                return None
-                                                        return get_signal
-                                                    signal_getter = make_signal_getter(trader, bot_ticker)
-                                                    asyncio.create_task(ibkr_handle(ev, bot_row_for_order, int(hwnd), signal_getter))
-                                            except Exception:
-                                                pass
+                                        svc.handle_trade_event(direction, ev.get('ticker'), ev.get('trade_id') or ev.get('ts'), ev.get('price'))
                                     except Exception:
                                         pass
-                            except Exception:
-                                pass
-                    except Exception:
-                        pass
 
-                    workers_payload.append({
-                        'hwnd': int(hwnd),
-                        'status': st or {},
-                        'screenshot_b64': image_b64,
-                        'screenshot_mime': image_mime,
-                        'last_result': last,
-                        'bot': bot_info,
-                        'bots': bot_list,
-                    })
+                                if direction == 'sell':
+                                    try:
+                                        if hasattr(svc, 'trade_recorder'):
+                                            shots = svc.trade_recorder.get_last_screenshots()
+                                            if shots:
+                                                ev['screenshots'] = shots
+                                    except Exception:
+                                        pass
 
-                    # Keep only the most recent screenshot per-worker to save disk
-                    try:
-                        if hasattr(svc, 'capture') and hasattr(svc.capture, 'clear_screenshots'):
-                            try:
-                                pre_count = svc.trade_recorder.pre_count if hasattr(svc, 'trade_recorder') else 5
-                            except Exception:
-                                pre_count = 5
-                            svc.capture.clear_screenshots(keep_last_n=pre_count + 1)
-                    except Exception:
-                        pass
-            except Exception:
-                pass
-
-            # ── Standalone R14 evaluation pass ────────────────────────────────────
-            # Runs INDEPENDENTLY of the capture-service loop so R14 always broadcasts
-            # live price + trend even when no screenshot capture session is active.
-            try:
-                from trading.rule14 import (
-                    _r14_states as _all_r14,
-                    maybe_rule14_signal as _r14_eval2,
-                    r14_state_for_frontend as _r14_fe2,
-                    record_order_placed as _r14_op2,
-                )
-                from ibkr.order_book_history import get_order_book_history as _r14_obh2
-                from ibkr.order_book import get_mid_price as _r14_mid2
-                import time as _r14t2
-                from datetime import datetime as _r14dt2, timezone as _r14tz2
-
-                for _r14_hwnd2, _r14_st2 in list(_all_r14.items()):
-                    try:
-                        from db.queries import get_bot_db_entry as _gbe4
-                        _r14_row4 = _gbe4(int(_r14_hwnd2)) or {}
-                        _r14_tick4 = str(_r14_row4.get('ticker') or '').strip().upper()
-                        if not _r14_tick4:
-                            continue
-
-                        if _r14_st2.enabled:
-                            # Query last 60s of order-book history
-                            _r14_now4 = _r14t2.time()
-                            _r14_end4 = _r14dt2.fromtimestamp(_r14_now4, tz=_r14tz2.utc).isoformat().replace('+00:00', 'Z')
-                            _r14_start4 = _r14dt2.fromtimestamp(_r14_now4 - 60, tz=_r14tz2.utc).isoformat().replace('+00:00', 'Z')
-                            _r14_res4 = _r14_obh2(_r14_tick4, start=_r14_start4, end=_r14_end4, max_points=30) or {}
-                            _r14_pts4 = _r14_res4.get('points') or []
-                            _r14_sig4 = _r14_eval2(int(_r14_hwnd2), _r14_pts4)
-
-                            # Fallback live price when no OB history yet
-                            if _r14_st2.last_mid_price is None:
+                                # Live IBKR order routing
                                 try:
-                                    _lp4 = _r14_mid2(_r14_tick4)
-                                    if _lp4:
-                                        _r14_st2.last_mid_price = float(_lp4)
+                                    from db.queries import get_bot_db_entry
+                                    bot_db_row = get_bot_db_entry(int(hwnd)) or {}
+                                    bot_session_row = bot if isinstance(bot, dict) else {}
+                                    bot_row_for_order = {**bot_db_row, **bot_session_row}
+                                    if bot_id and not bot_row_for_order.get('bot_id'):
+                                        bot_row_for_order['bot_id'] = bot_id
+
+                                    live_enabled_raw = bot_row_for_order.get('live_trading_enabled')
+                                    if isinstance(live_enabled_raw, str):
+                                        live_enabled = live_enabled_raw.strip().lower() in ('1', 'true', 'yes', 'on')
+                                    else:
+                                        live_enabled = bool(live_enabled_raw)
+
+                                    if live_enabled:
+                                        from ibkr.order_router import handle_trade_event as ibkr_handle
+                                        def make_signal_getter(t, tr):
+                                            def get_signal():
+                                                try:
+                                                    state = t.core.get_state(tr) if hasattr(t.core, 'get_state') else None
+                                                    if state and hasattr(state, 'last_direction'):
+                                                        return state.last_direction
+                                                    return None
+                                                except Exception:
+                                                    return None
+                                            return get_signal
+                                        signal_getter = make_signal_getter(trader, bot_ticker)
+                                        asyncio.create_task(ibkr_handle(ev, bot_row_for_order, int(hwnd), signal_getter))
                                 except Exception:
                                     pass
+                    except Exception as sig_err:
+                        logger.error(f"[Simulator signal evaluation error]: {sig_err}")
 
-                            # Dispatch order if R14 fired
-                            if _r14_sig4 in ('buy', 'sell'):
-                                import asyncio as _r14aio4
-                                from db.queries import get_bot_db_entry as _gbe5
-                                _r14_bot5 = _gbe5(int(_r14_hwnd2)) or {}
-                                _r14_sp4 = _r14_st2.last_mid_price or 0
-                                _r14_td4 = {
-                                    'direction': _r14_sig4, 'ticker': _r14_tick4,
-                                    'price': _r14_sp4, 'ts': str(_r14t2.time()),
-                                    'bot_id': str(_r14_hwnd2), 'rule': 'R14',
-                                }
-                                _r14_lp4 = float(_r14_sp4) if _r14_sp4 else None
-                                _r14_op2(int(_r14_hwnd2), _r14_sig4, _r14_sp4, _r14_lp4)
+                # Clean up old screenshots
+                try:
+                    if hasattr(svc, 'capture') and hasattr(svc.capture, 'clear_screenshots'):
+                        try:
+                            pre_count = svc.trade_recorder.pre_count if hasattr(svc, 'trade_recorder') else 5
+                        except Exception:
+                            pre_count = 5
+                        svc.capture.clear_screenshots(keep_last_n=pre_count + 1)
+                except Exception:
+                    pass
 
-                                async def _r14_fw4(td, br, hw, sg, sp, lp):
-                                    from ibkr.order_router import handle_trade_event as _h4
-                                    from trading.rule14 import record_order_fill as _rf4
-                                    try:
-                                        await _h4(td, br, hw)
-                                        try:
-                                            from db.queries import get_last_order_for_hwnd_ticker as _glo4
-                                            lo4 = _glo4(hw, td.get('ticker', ''))
-                                            if lo4:
-                                                _rf4(hw, sg, sp, lp, lo4.get('fill_price'),
-                                                     lo4.get('status') == 'filled', lo4.get('error_msg') or '')
-                                            else:
-                                                _rf4(hw, sg, sp, lp, None, False, 'no record')
-                                        except Exception as _fe4:
-                                            _rf4(hw, sg, sp, lp, None, False, str(_fe4))
-                                    except Exception as _oe4:
-                                        _rf4(hw, sg, sp, lp, None, False, str(_oe4))
-                                _r14aio4.create_task(_r14_fw4(
-                                    _r14_td4, _r14_bot5, int(_r14_hwnd2), _r14_sig4, _r14_sp4, _r14_lp4
-                                ))
+            # Step 3: Run standalone R14 evaluation pass
+            try:
+                evaluate_standalone_r14(ibkr_live_state)
+            except Exception as se_err:
+                logger.error(f"[Standalone R14 error]: {se_err}")
 
-                        # Always push R14 state (enabled or disabled) into the WS payload
-                        if _r14_tick4 in ibkr_live_state:
-                            ibkr_live_state[_r14_tick4]['r14'] = _r14_fe2(int(_r14_hwnd2))
-                        else:
-                            ibkr_live_state[_r14_tick4] = {
-                                'ticker': _r14_tick4, 'prices': [], 'trend': _r14_st2.last_trend,
-                                'price': _r14_st2.last_mid_price, 'last_signal': None,
-                                'r14': _r14_fe2(int(_r14_hwnd2)),
-                            }
-                    except Exception as _r14_inner2:
-                        import logging as _logr14
-                        _logr14.getLogger(__name__).warning(f'[R14 standalone] hwnd={_r14_hwnd2}: {_r14_inner2}')
-            except Exception as _r14_outer4:
-                import logging as _logr14o
-                _logr14o.getLogger(__name__).warning(f'[R14 standalone outer]: {_r14_outer4}')
-            # ─────────────────────────────────────────────────────────────────────
-
-            # Collect only NEW trades since last broadcast (delta — keeps payload tiny)
-            new_trades = []
+            # Step 4: Construct final broadcast payload
             try:
                 new_trades = trader.core.get_new_trades()
             except Exception:
@@ -820,10 +402,9 @@ async def broadcaster_loop():
                 'trade_summary': trader.summary(),
                 'new_trades': new_trades,
                 'signal_source': signal_source,
-                'ibkr_live_state': ibkr_live_state,   # per-ticker sparkline data
+                'ibkr_live_state': ibkr_live_state,
             }
 
-            # IBKR live trading status (non-blocking — all reads from in-memory or DB)
             try:
                 from ibkr.client import is_connected as ibkr_is_connected
                 from ibkr.order_book import get_all_snapshots
@@ -840,9 +421,9 @@ async def broadcaster_loop():
                 payload['ibkr_account'] = {}
 
             await manager.broadcast(json.dumps(payload))
-        except Exception as e:
-            print("Broadcaster loop error:", e)
-        await asyncio.sleep(0.1)  # 5× faster — signals fire within 200ms (was 1s)
+        except Exception as outer_err:
+            logger.error(f"Broadcaster loop outer error: {outer_err}")
+        await asyncio.sleep(0.1)
 
 
 __all__ = ["broadcaster_loop"]
