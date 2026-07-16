@@ -9,6 +9,11 @@ WEB_UI_DIR = "web_ui"
 
 # API Key for authentication
 API_KEY = os.environ.get("BACKEND_API_KEY", "devkey")
+if API_KEY == "devkey":
+    print("=" * 60)
+    print("⚠️  SECURITY WARNING: Using default insecure API_KEY ('devkey').")
+    print("   Please set the BACKEND_API_KEY environment variable in production.")
+    print("=" * 60)
 
 # CORS configuration: allow listing for production, with a DEV override
 DEV_ALLOW_ALL_CORS = os.environ.get("DEV_ALLOW_ALL_CORS", "0") in ("1", "true", "True")

@@ -346,7 +346,7 @@ class ScreenshotCapture:
 
 if __name__ == "__main__":
     # Test the screenshot capture
-    from backend.window_selector import WindowSelector
+    from window_selector import WindowSelector
     
     selector = WindowSelector()
     windows = selector.enumerate_windows()

@@ -16,7 +16,7 @@ def _as_floats(values: Iterable[float]) -> list:
 
 def calculate_rsi(prices: Iterable[float], length: int = 14) -> Optional[float]:
     series = _as_floats(prices)
-    if len(series) < length + 1:
+    if length <= 0 or len(series) < length + 1:
         return None
 
     window = series[-(length + 1):]
@@ -42,7 +42,7 @@ def calculate_bollinger_bands(
     stdev_multiplier: float = 2.0,
 ) -> Optional[Tuple[float, float, float]]:
     series = _as_floats(prices)
-    if len(series) < length:
+    if length <= 0 or len(series) < length:
         return None
 
     window = series[-length:]

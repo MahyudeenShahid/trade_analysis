@@ -90,9 +90,13 @@ async def place_order(
     port = int(cfg.get("ibkr_port", "4002"))
     cid = int(cfg.get("ibkr_client_id", "1"))
 
-    from ib_async import Stock, MarketOrder, LimitOrder
+    from ib_async import Stock, MarketOrder, LimitOrder, Crypto
 
-    contract = Stock(req.ticker, "SMART", "USD")
+    ticker_u = str(req.ticker or '').strip().upper()
+    if ticker_u in ("BTC", "ETH", "LTC", "BCH"):
+        contract = Crypto(req.ticker, "PAXOS", "USD")
+    else:
+        contract = Stock(req.ticker, "SMART", "USD")
 
     last_error = "Unknown error"
     for attempt in range(max_retries):
@@ -125,6 +129,9 @@ async def place_order(
                 order = LimitOrder(req.direction.upper(), req.qty, req.limit_price)
             else:
                 order = MarketOrder(req.direction.upper(), req.qty)
+
+            # Enable trading outside regular trading hours (pre-market/after-hours)
+            order.outsideRth = True
 
             trade = ib.placeOrder(contract, order)
             logger.info(
@@ -605,3 +612,10 @@ def _parse_ibkr_error(error_str: str) -> str:
 
 # Module-level NAV cache (updated by account background task if needed)
 _cached_nav: float = 0.0
+
+
+def update_cached_nav(nav: float):
+    """Update NAV cache value used by order quantity calculator."""
+    global _cached_nav
+    _cached_nav = nav
+

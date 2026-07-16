@@ -256,7 +256,9 @@ def upload_file():
         if not file.filename.lower().endswith((".png", ".jpg", ".jpeg", ".bmp")):
             return render_template_string(ERROR_TEMPLATE, error_message="Invalid file format.")
 
-        filepath = os.path.join(UPLOAD_FOLDER, file.filename)
+        import uuid
+        safe_filename = f"{uuid.uuid4().hex}_{os.path.basename(file.filename)}"
+        filepath = os.path.join(UPLOAD_FOLDER, safe_filename)
         file.save(filepath)
         
         try:

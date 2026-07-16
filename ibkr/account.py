@@ -39,7 +39,14 @@ async def get_account_summary() -> Dict[str, str]:
         return {}
     try:
         values = ib.accountValues()
-        return {v.tag: v.value for v in values if v.currency in ("USD", "")}
+        summary = {v.tag: v.value for v in values if v.currency in ("USD", "")}
+        if "NetLiquidation" in summary:
+            try:
+                from .order_router import update_cached_nav
+                update_cached_nav(float(summary["NetLiquidation"]))
+            except Exception:
+                pass
+        return summary
     except Exception as e:
         logger.error(f"[IBKR Account] get_account_summary failed: {e}")
         return {}

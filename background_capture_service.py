@@ -214,7 +214,9 @@ class BackgroundCaptureService:
                 # Debug: print target window info
                 try:
                     win_info = self.selector.get_window_by_handle(self.target_hwnd)
-                    print(f"[BackgroundCapture] Capturing window: {win_info['title']} (hwnd={self.target_hwnd})")
+                    if win_info:
+                        hwnd_val, title_val, proc_val = win_info
+                        print(f"[BackgroundCapture] Capturing window: {title_val} (hwnd={self.target_hwnd})")
                 except Exception as e:
                     print(f"[BackgroundCapture] Could not get window info: {e}")
                 

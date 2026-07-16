@@ -640,8 +640,8 @@ def api_uploads(filename: str):
     Returns:
         FileResponse: The requested file
     """
-    path = os.path.join(UPLOADS_DIR, filename)
-    if not os.path.exists(path):
+    path = _safe_join(UPLOADS_DIR, filename)
+    if not path or not os.path.exists(path):
         return JSONResponse(status_code=404, content={"detail": "file not found"})
     return FileResponse(path)
 

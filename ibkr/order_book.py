@@ -101,11 +101,14 @@ async def ensure_top_of_book(ticker: str, exchange: str = "SMART") -> bool:
         return True
     if not is_connected() or ib is None:
         return False
-
     try:
-        from ib_async import Stock
+        from ib_async import Stock, Crypto
         exchange_u = str(exchange or "SMART").strip().upper()
-        contract = Stock(ticker, exchange_u, "USD")
+        ticker_u = str(ticker or "").strip().upper()
+        if ticker_u in ("BTC", "ETH", "LTC", "BCH"):
+            contract = Crypto(ticker, "PAXOS", "USD")
+        else:
+            contract = Stock(ticker, exchange_u, "USD")
         await ib.qualifyContractsAsync(contract)
         _ensure_top_of_book_subscription(ticker, contract)
         return ticker in _top_subscriptions
@@ -537,8 +540,12 @@ async def subscribe_depth(
         return False
 
     try:
-        from ib_async import Stock
-        contract = Stock(ticker, exchange, "USD")
+        from ib_async import Stock, Crypto
+        ticker_u = str(ticker or "").strip().upper()
+        if ticker_u in ("BTC", "ETH", "LTC", "BCH"):
+            contract = Crypto(ticker, "PAXOS", "USD")
+        else:
+            contract = Stock(ticker, exchange, "USD")
         await ib.qualifyContractsAsync(contract)
 
         depth_ticker = ib.reqMktDepth(contract, numRows=num_rows, isSmartDepth=is_smart_depth)
