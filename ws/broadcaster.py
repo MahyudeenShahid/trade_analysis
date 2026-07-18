@@ -6,7 +6,7 @@ import logging
 from .manager import manager
 from config.time_utils import current_timestamp
 from .broadcaster_worker import build_workers_payload
-from .broadcaster_r14 import evaluate_r14_for_bot, evaluate_standalone_r14
+from .broadcaster_r14 import evaluate_r14_for_bot, evaluate_standalone_r14, evaluate_r15_for_bot, evaluate_standalone_r15
 
 logger = logging.getLogger(__name__)
 
@@ -191,6 +191,17 @@ async def broadcaster_loop():
 
                     if r14_fired:
                         # Skip other rules if R14 trade was placed
+                        continue
+
+                    # Rule 15 Evaluation (main chart slope scalper)
+                    r15_fired = False
+                    try:
+                        r15_fired = evaluate_r15_for_bot(hwnd, bot, bot_id, signal_price, ibkr_live_state, signal_trend)
+                    except Exception as r15e:
+                        logger.warning(f"[R15 evaluation error] {r15e}")
+
+                    if r15_fired:
+                        # Skip other rules if R15 trade was placed
                         continue
 
                     if signal_price is None:
@@ -384,11 +395,16 @@ async def broadcaster_loop():
                 except Exception:
                     pass
 
-            # Step 3: Run standalone R14 evaluation pass
+            # Step 3: Run standalone R14 and R15 evaluation passes
             try:
                 await evaluate_standalone_r14(ibkr_live_state)
             except Exception as se_err:
                 logger.error(f"[Standalone R14 error]: {se_err}")
+
+            try:
+                await evaluate_standalone_r15(ibkr_live_state)
+            except Exception as se_err_r15:
+                logger.error(f"[Standalone R15 error]: {se_err_r15}")
 
             # Step 4: Construct final broadcast payload
             try:

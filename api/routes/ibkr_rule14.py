@@ -26,15 +26,56 @@ async def rule14_configure(payload: dict, _auth=Depends(require_api_key)):
         raise HTTPException(status_code=400, detail='hwnd required')
     slope_threshold_pct = float(payload.get('slope_threshold', DEFAULT_SLOPE_THRESHOLD * 100))
     strategy_mode = str(payload.get('strategy_mode', 'scan')).strip().lower()
+    enabled = bool(payload.get('enabled', False))
+    qty = int(payload.get('qty', 1))
+    stop_loss_pct = float(payload.get('stop_loss_pct', 0.0))
+    cooldown_secs = float(payload.get('cooldown_secs', 0.0))
     configure_r14(
         hwnd,
-        enabled=bool(payload.get('enabled', False)),
-        qty=int(payload.get('qty', 1)),
-        stop_loss_pct=float(payload.get('stop_loss_pct', 0.0)),
-        cooldown_secs=float(payload.get('cooldown_secs', 0.0)),
+        enabled=enabled,
+        qty=qty,
+        stop_loss_pct=stop_loss_pct,
+        cooldown_secs=cooldown_secs,
         slope_threshold=slope_threshold_pct / 100.0,  # convert % to fraction
         strategy_mode=strategy_mode,
     )
+
+    # Persist to DB so the badge shows on BotCard and config survives restarts
+    try:
+        from db.queries import get_bot_db_entry, upsert_bot_settings
+        import json as _json
+        _row = get_bot_db_entry(hwnd) or {}
+        _meta = _row.get('meta') or {}
+        if isinstance(_meta, str):
+            try:
+                _meta = _json.loads(_meta)
+            except Exception:
+                _meta = {}
+        if not isinstance(_meta, dict):
+            _meta = {}
+        _meta['r14_config'] = {
+            'enabled': enabled,
+            'qty': qty,
+            'stop_loss_pct': stop_loss_pct,
+            'cooldown_secs': cooldown_secs,
+            'slope_threshold': slope_threshold_pct,
+            'strategy_mode': strategy_mode,
+        }
+        upsert_bot_settings(hwnd, {'meta': _meta})
+
+        # Sync to in-memory bot registry to update UI badges immediately
+        try:
+            from services.bot_registry import list_bots_by_hwnd, update_bot
+            for _b in list_bots_by_hwnd(hwnd):
+                _bid = _b.get('bot_id') or _b.get('id')
+                if _bid:
+                    update_bot(_bid, {'meta': _meta})
+        except Exception:
+            pass
+    except Exception as _pe:
+        import logging
+        logging.getLogger(__name__).warning(f"[R14] Failed to persist config for hwnd={hwnd}: {_pe}")
+
     return {'ok': True, 'state': r14_state_for_frontend(hwnd)}
 
 

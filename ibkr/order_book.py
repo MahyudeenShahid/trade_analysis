@@ -498,6 +498,60 @@ async def resubscribe_all(force: bool = True):
             logger.warning(f"[IBKR OrderBook] resubscribe_all failed for {ticker}: {e}")
 
 
+async def seed_price_history_from_ibkr(ticker: str, duration: str = "900 S", bar_size: str = "10 secs"):
+    """Fetch recent historical bars from IBKR to seed the in-memory price history cache."""
+    from .client import ib, is_connected
+    if not is_connected() or ib is None:
+        return
+    try:
+        from ib_async import Stock
+        from .order_book_cache import _record_price_sample
+        import datetime
+        
+        ticker_upper = str(ticker or "").strip().upper()
+        if not ticker_upper:
+            return
+            
+        contract = Stock(ticker_upper, "SMART", "USD")
+        await ib.qualifyContractsAsync(contract)
+        
+        # Request recent trades (works in pre/after market with useRTH=False)
+        bars = await ib.reqHistoricalDataAsync(
+            contract,
+            endDateTime="",
+            durationStr=duration,
+            barSizeSetting=bar_size,
+            whatToShow="TRADES",
+            useRTH=False,
+            formatDate=1,
+        )
+        if bars:
+            for bar in bars:
+                ts = None
+                if isinstance(bar.date, (datetime.datetime, datetime.date)):
+                    if isinstance(bar.date, datetime.datetime):
+                        ts = bar.date.timestamp()
+                    else:
+                        ts = datetime.datetime.combine(bar.date, datetime.time.min).timestamp()
+                else:
+                    try:
+                        ts = datetime.datetime.fromisoformat(str(bar.date)).timestamp()
+                    except Exception:
+                        pass
+                if bar.close:
+                    _record_price_sample(
+                        ticker_upper,
+                        float(bar.close),
+                        volume=float(bar.volume or 0.0),
+                        ts=ts,
+                        force=True,
+                        source="historical"
+                    )
+            logger.info(f"[IBKR OrderBook] Seeded {len(bars)} historical price samples for {ticker_upper}")
+    except Exception as e:
+        logger.warning(f"[IBKR OrderBook] Failed to seed price history for {ticker_upper}: {e}")
+
+
 __all__ = [
     "get_snapshot",
     "get_all_snapshots",
@@ -515,4 +569,5 @@ __all__ = [
     "get_price_history",
     "get_price_volume_history",
     "get_aggregate_volume",
+    "seed_price_history_from_ibkr",
 ]

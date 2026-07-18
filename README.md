@@ -50,6 +50,12 @@ If you use a free ngrok tunnel, new visitors will see a browser warning/intersti
 ---
 
 
+## Trading Rules
+
+Detailed documentation for specialized trading algorithms is available separately:
+
+*   [Rule 15 — Main Chart Auto-Trader Detailed Docs](file:///e:/client/client/trade_analysis/RULE15.md)
+
 ---
 
 Developed by [Mahyudeen Shahid](https://mahyudeen.netlify.app/) with ❤

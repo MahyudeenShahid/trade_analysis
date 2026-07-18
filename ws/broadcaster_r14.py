@@ -308,3 +308,311 @@ async def evaluate_standalone_r14(ibkr_live_state: dict):
                 logger.warning(f'[R14 standalone] hwnd={_r14_hwnd2}: {_r14_inner2}')
     except Exception as _r14_outer4:
         logger.warning(f'[R14 standalone outer]: {_r14_outer4}')
+
+# ─── Rule 15 evaluation ───────────────────────────────────────────────────────
+
+def evaluate_r15_for_bot(
+    hwnd: int,
+    bot: dict,
+    bot_id: str,
+    signal_price,
+    ibkr_live_state: dict,
+    signal_trend: str = '',
+) -> bool:
+    """
+    Evaluate Rule 15 for a single bot in the main broadcaster loop.
+
+    Uses the IBKR live price history (main chart data) rather than OB history.
+    Returns True if a R15 signal fired (caller should skip other rules).
+    """
+    from trading.rule15 import (
+        get_r15_state as _get_r15,
+        maybe_rule15_signal as _maybe_r15,
+        r15_state_for_frontend as _r15_fe,
+        record_order_placed as _r15_record_placed,
+    )
+    from ibkr.order_book import get_price_history as _get_ph
+    import time as _r15_time
+
+    bot_ticker = bot.get('ticker')
+    _r15_ticker = str(bot_ticker or '').strip().upper()
+    _r15_s = _get_r15(int(hwnd))
+
+    if not _r15_ticker or not _r15_s.enabled:
+        return False
+
+    # Pull IBKR live price history (the main chart's data source)
+    _r15_prices = _get_ph(_r15_ticker, raw=True) or []
+
+    # Fallback to ibkr_live_state rolling prices if order_book history is empty
+    if not _r15_prices and _r15_ticker in ibkr_live_state:
+        _r15_prices = list(ibkr_live_state[_r15_ticker].get('prices') or [])
+
+    if len(_r15_prices) < 2:
+        from ibkr.order_book import seed_price_history_from_ibkr as _seed_r15
+        import asyncio
+        asyncio.create_task(_seed_r15(_r15_ticker))
+
+    _r15_sig = _maybe_r15(int(hwnd), _r15_prices, bot_trend=signal_trend)
+
+    # Seed last_mid_price if still None
+    if _r15_s.last_mid_price is None and signal_price:
+        try:
+            _r15_s.last_mid_price = float(signal_price)
+        except Exception:
+            pass
+
+    # Always push R15 state into ibkr_live_state for WS broadcast
+    if _r15_ticker in ibkr_live_state:
+        ibkr_live_state[_r15_ticker]['r15'] = _r15_fe(int(hwnd))
+    else:
+        ibkr_live_state[_r15_ticker] = {
+            'ticker': _r15_ticker,
+            'prices': [],
+            'trend': _r15_s.last_trend,
+            'price': signal_price,
+            'last_signal': None,
+            'r15': _r15_fe(int(hwnd)),
+        }
+
+    if _r15_sig in ('buy', 'sell'):
+        from db.queries import get_bot_db_entry as _get_bot_db_r15
+        _r15_bot_db = _get_bot_db_r15(int(hwnd)) or {}
+        _r15_bot_row = {**_r15_bot_db, **(bot if isinstance(bot, dict) else {})}
+        _r15_sp = signal_price or _r15_s.last_mid_price or 0
+        _r15_lp = float(_r15_sp) if _r15_sp else None
+        _r15_record_placed(int(hwnd), _r15_sig, _r15_sp or 0, _r15_lp)
+        ibkr_live_state[_r15_ticker]['r15'] = _r15_fe(int(hwnd))
+
+        _r15_trade = {
+            'direction': _r15_sig,
+            'ticker': _r15_ticker,
+            'price': _r15_sp,
+            'ts': str(_r15_time.time()),
+            'bot_id': bot_id,
+            'rule': 'R15',
+        }
+
+        async def _r15_fill_wrap(trade_d, bot_r, _hwnd, _sig, _sp, _lp):
+            from ibkr.order_router import handle_trade_event as _hte_r15
+            from trading.rule15 import record_order_fill as _rof_r15
+            try:
+                live_enabled_raw = bot_r.get('live_trading_enabled')
+                if isinstance(live_enabled_raw, str):
+                    live_enabled = live_enabled_raw.strip().lower() in ('1', 'true', 'yes', 'on')
+                else:
+                    live_enabled = bool(live_enabled_raw)
+
+                # Simulated / Paper fill
+                if not live_enabled:
+                    await asyncio.sleep(0.5)
+                    _rof_r15(_hwnd, _sig, _sp, _lp, _sp, True, '')
+                    try:
+                        from db.queries import save_live_order
+                        save_live_order({
+                            "ts": datetime.now(timezone.utc).isoformat() + "Z",
+                            "hwnd": _hwnd,
+                            "bot_id": bot_r.get('id') or bot_r.get('bot_id'),
+                            "ticker": trade_d.get('ticker'),
+                            "direction": _sig,
+                            "order_type": bot_r.get('buy_order_type') if _sig == 'buy' else bot_r.get('sell_order_type') or 'limit',
+                            "qty": bot_r.get('order_size_value', 1.0),
+                            "price": _sp,
+                            "limit_price": _lp,
+                            "status": "filled",
+                            "trade_ref_id": trade_d.get('ts'),
+                            "fill_price": _sp,
+                            "fill_ts": datetime.now(timezone.utc).isoformat() + "Z",
+                            "error_msg": "Paper Trade Simulated (R15)",
+                        })
+                    except Exception:
+                        pass
+                    return
+
+                # Live execution via TWS/Gateway
+                await _hte_r15(trade_d, bot_r, _hwnd)
+                try:
+                    from db.queries import get_last_order_for_hwnd_ticker as _glo_r15
+                    last_ord = _glo_r15(_hwnd, trade_d.get('ticker', ''))
+                    if last_ord:
+                        _rof_r15(_hwnd, _sig, _sp, _lp, last_ord.get('fill_price'),
+                                 last_ord.get('status') == 'filled', last_ord.get('error_msg') or '')
+                    else:
+                        _rof_r15(_hwnd, _sig, _sp, _lp, None, False, 'no order record')
+                except Exception as _fe_r15:
+                    _rof_r15(_hwnd, _sig, _sp, _lp, None, False, str(_fe_r15))
+            except Exception as _oe_r15:
+                _rof_r15(_hwnd, _sig, _sp, _lp, None, False, str(_oe_r15))
+
+        asyncio.create_task(
+            _r15_fill_wrap(_r15_trade, _r15_bot_row, int(hwnd),
+                           _r15_sig, _r15_sp or 0, _r15_lp)
+        )
+        ibkr_live_state[_r15_ticker]['last_signal'] = {
+            'direction': _r15_sig,
+            'price': signal_price,
+            'ts': str(_r15_time.time()),
+        }
+        return True
+    return False
+
+
+async def evaluate_standalone_r15(ibkr_live_state: dict):
+    """Evaluate Rule 15 for all registered bots independently of screenshot captures."""
+    try:
+        from trading.rule15 import (
+            _r15_states as _all_r15,
+            maybe_rule15_signal as _r15_eval_sa,
+            r15_state_for_frontend as _r15_fe_sa,
+            record_order_placed as _r15_op_sa,
+            configure_r15 as _r15_cfg_sa,
+            DEFAULT_SLOPE_THRESHOLD as _r15_dflt_sa,
+        )
+        from ibkr.order_book import get_price_history as _ph_sa, get_mid_price as _mid_sa, ensure_top_of_book as _ensure_sa
+        import time as _r15t_sa
+
+        # ── Bootstrap: load saved R15 config from DB for any bots not yet in memory ──
+        try:
+            from db.connection import DB_PATH, DB_LOCK
+            import sqlite3 as _sq_sa, json as _js_sa
+            with DB_LOCK:
+                _conn_sa = _sq_sa.connect(DB_PATH)
+                _conn_sa.row_factory = _sq_sa.Row
+                _rows_sa = _conn_sa.execute("SELECT hwnd, meta FROM bots WHERE hwnd IS NOT NULL").fetchall()
+                _conn_sa.close()
+            for _boot_row in _rows_sa:
+                try:
+                    _boot_hwnd = int(_boot_row['hwnd'])
+                    if _boot_hwnd in _all_r15:
+                        continue   # Already loaded
+                    _boot_meta = {}
+                    try:
+                        _boot_meta = _js_sa.loads(_boot_row['meta'] or '{}')
+                    except Exception:
+                        pass
+                    _boot_cfg = _boot_meta.get('r15_config') if isinstance(_boot_meta, dict) else None
+                    if _boot_cfg and isinstance(_boot_cfg, dict):
+                        _r15_cfg_sa(
+                            _boot_hwnd,
+                            enabled=bool(_boot_cfg.get('enabled', False)),
+                            qty=int(_boot_cfg.get('qty', 1)),
+                            stop_loss_pct=float(_boot_cfg.get('stop_loss_pct', 0.0)),
+                            cooldown_secs=float(_boot_cfg.get('cooldown_secs', 0.0)),
+                            slope_threshold=float(_boot_cfg.get('slope_threshold', _r15_dflt_sa * 100)) / 100.0,
+                            strategy_mode=str(_boot_cfg.get('strategy_mode', 'scan')),
+                            lookback_seconds=float(_boot_cfg.get('lookback_seconds', 300.0)),
+                            use_bot_trend=bool(_boot_cfg.get('use_bot_trend', False)),
+                            always_sell_on_profit=bool(_boot_cfg.get('always_sell_on_profit', False)),
+                        )
+                        logger.info(f"[R15 bootstrap] Loaded config for hwnd={_boot_hwnd} from DB")
+                except Exception as _boot_err:
+                    logger.debug(f"[R15 bootstrap] hwnd error: {_boot_err}")
+        except Exception as _boot_outer:
+            logger.debug(f"[R15 bootstrap outer]: {_boot_outer}")
+
+        for _r15_hwnd_sa, _r15_st_sa in list(_all_r15.items()):
+            try:
+                from db.queries import get_bot_db_entry as _gbe_sa
+                _r15_row_sa = _gbe_sa(int(_r15_hwnd_sa)) or {}
+                _r15_tick_sa = str(_r15_row_sa.get('ticker') or '').strip().upper()
+                if not _r15_tick_sa:
+                    continue
+
+                if _r15_st_sa.enabled:
+                    await _ensure_sa(_r15_tick_sa)
+                    _prices_sa = _ph_sa(_r15_tick_sa, raw=True) or []
+
+                    if not _prices_sa and _r15_tick_sa in ibkr_live_state:
+                        _prices_sa = list(ibkr_live_state[_r15_tick_sa].get('prices') or [])
+
+                    if len(_prices_sa) < 2:
+                        from ibkr.order_book import seed_price_history_from_ibkr as _seed_sa
+                        await _seed_sa(_r15_tick_sa)
+                        _prices_sa = _ph_sa(_r15_tick_sa, raw=True) or []
+
+                    _r15_sig_sa = _r15_eval_sa(int(_r15_hwnd_sa), _prices_sa)
+
+                    if _r15_st_sa.last_mid_price is None:
+                        try:
+                            _lp_sa = _mid_sa(_r15_tick_sa)
+                            if _lp_sa:
+                                _r15_st_sa.last_mid_price = float(_lp_sa)
+                        except Exception:
+                            pass
+
+                    if _r15_sig_sa in ('buy', 'sell'):
+                        from db.queries import get_bot_db_entry as _gbe_sa2
+                        _r15_bot_sa = _gbe_sa2(int(_r15_hwnd_sa)) or {}
+                        _r15_sp_sa = _r15_st_sa.last_mid_price or 0
+                        _r15_lp_sa = float(_r15_sp_sa) if _r15_sp_sa else None
+                        _r15_td_sa = {
+                            'direction': _r15_sig_sa, 'ticker': _r15_tick_sa,
+                            'price': _r15_sp_sa, 'ts': str(_r15t_sa.time()),
+                            'bot_id': str(_r15_hwnd_sa), 'rule': 'R15',
+                        }
+                        _r15_op_sa(int(_r15_hwnd_sa), _r15_sig_sa, _r15_sp_sa, _r15_lp_sa)
+
+                        async def _r15_fw_sa(td, br, hw, sg, sp, lp):
+                            from ibkr.order_router import handle_trade_event as _h_sa
+                            from trading.rule15 import record_order_fill as _rf_sa
+                            try:
+                                live_enabled_raw = br.get('live_trading_enabled')
+                                if isinstance(live_enabled_raw, str):
+                                    live_enabled = live_enabled_raw.strip().lower() in ('1', 'true', 'yes', 'on')
+                                else:
+                                    live_enabled = bool(live_enabled_raw)
+
+                                if not live_enabled:
+                                    await asyncio.sleep(0.5)
+                                    _rf_sa(hw, sg, sp, lp, sp, True, '')
+                                    try:
+                                        from db.queries import save_live_order
+                                        save_live_order({
+                                            "ts": datetime.now(timezone.utc).isoformat() + "Z",
+                                            "hwnd": hw, "bot_id": br.get('id') or br.get('bot_id'),
+                                            "ticker": td.get('ticker'), "direction": sg,
+                                            "order_type": br.get('buy_order_type') if sg == 'buy' else br.get('sell_order_type') or 'limit',
+                                            "qty": br.get('order_size_value', 1.0), "price": sp,
+                                            "limit_price": lp, "status": "filled",
+                                            "trade_ref_id": td.get('ts'), "fill_price": sp,
+                                            "fill_ts": datetime.now(timezone.utc).isoformat() + "Z",
+                                            "error_msg": "Paper Trade Simulated (R15)",
+                                        })
+                                    except Exception:
+                                        pass
+                                    return
+
+                                await _h_sa(td, br, hw)
+                                try:
+                                    from db.queries import get_last_order_for_hwnd_ticker as _glo_sa
+                                    lo_sa = _glo_sa(hw, td.get('ticker', ''))
+                                    if lo_sa:
+                                        _rf_sa(hw, sg, sp, lp, lo_sa.get('fill_price'),
+                                               lo_sa.get('status') == 'filled', lo_sa.get('error_msg') or '')
+                                    else:
+                                        _rf_sa(hw, sg, sp, lp, None, False, 'no record')
+                                except Exception as _fe_sa:
+                                    _rf_sa(hw, sg, sp, lp, None, False, str(_fe_sa))
+                            except Exception as _oe_sa:
+                                _rf_sa(hw, sg, sp, lp, None, False, str(_oe_sa))
+
+                        asyncio.create_task(_r15_fw_sa(
+                            _r15_td_sa, _r15_bot_sa, int(_r15_hwnd_sa),
+                            _r15_sig_sa, _r15_sp_sa, _r15_lp_sa
+                        ))
+
+                # Always push R15 state into ibkr_live_state
+                if _r15_tick_sa in ibkr_live_state:
+                    ibkr_live_state[_r15_tick_sa]['r15'] = _r15_fe_sa(int(_r15_hwnd_sa))
+                else:
+                    ibkr_live_state[_r15_tick_sa] = {
+                        'ticker': _r15_tick_sa, 'prices': [],
+                        'trend': _r15_st_sa.last_trend,
+                        'price': _r15_st_sa.last_mid_price, 'last_signal': None,
+                        'r15': _r15_fe_sa(int(_r15_hwnd_sa)),
+                    }
+            except Exception as _r15_inner:
+                logger.warning(f'[R15 standalone] hwnd={_r15_hwnd_sa}: {_r15_inner}')
+    except Exception as _r15_outer:
+        logger.warning(f'[R15 standalone outer]: {_r15_outer}')
+
