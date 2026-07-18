@@ -6,7 +6,7 @@ import logging
 from .manager import manager
 from config.time_utils import current_timestamp
 from .broadcaster_worker import build_workers_payload
-from .broadcaster_r14 import evaluate_r14_for_bot, evaluate_standalone_r14, evaluate_r15_for_bot, evaluate_standalone_r15
+from .broadcaster_r14 import evaluate_r14_for_bot, evaluate_standalone_r14, evaluate_r12_for_bot, evaluate_standalone_r12
 
 logger = logging.getLogger(__name__)
 
@@ -88,8 +88,7 @@ async def broadcaster_loop():
                     bot_ticker = bot.get('ticker') or screenshot_ticker
                     if not bot_ticker:
                         continue
-                    if bool(bot.get('trading_paused')):
-                        continue
+                    is_paused = bool(bot.get('trading_paused'))
 
                     bot_id = bot.get('bot_id') or bot.get('id')
                     bot_name = bot.get('name')
@@ -172,12 +171,18 @@ async def broadcaster_loop():
 
                         try:
                             _tick_prices = list(rsi_bollinger_history or [])[-60:]
+                            _existing_state = ibkr_live_state.get(ibkr_ticker, {})
                             ibkr_live_state[ibkr_ticker] = {
                                 'ticker': ibkr_ticker,
                                 'prices': _tick_prices,
                                 'trend': signal_trend,
                                 'price': signal_price,
-                                'last_signal': ibkr_live_state.get(ibkr_ticker, {}).get('last_signal'),
+                                'last_signal': _existing_state.get('last_signal'),
+                                # Preserve r12/r14 sub-dicts so they aren't wiped before
+                                # evaluate_r12_for_bot / evaluate_r14_for_bot run this cycle,
+                                # and survive cycles where r14_fired causes r12 to be skipped.
+                                'r12': _existing_state.get('r12'),
+                                'r14': _existing_state.get('r14'),
                             }
                         except Exception:
                             pass
@@ -185,25 +190,25 @@ async def broadcaster_loop():
                     # Rule 14 Evaluation
                     r14_fired = False
                     try:
-                        r14_fired = evaluate_r14_for_bot(hwnd, bot, bot_id, signal_price, ibkr_live_state)
+                        r14_fired = evaluate_r14_for_bot(hwnd, bot, bot_id, signal_price, ibkr_live_state, is_paused=is_paused)
                     except Exception as re:
                         logger.warning(f"[R14 evaluation error] {re}")
 
                     if r14_fired:
                         # Skip other rules if R14 trade was placed
                         continue
-
-                    # Rule 15 Evaluation (main chart slope scalper)
-                    r15_fired = False
+                    # Rule 12 Evaluation
+                    r12_fired = False
                     try:
-                        r15_fired = evaluate_r15_for_bot(hwnd, bot, bot_id, signal_price, ibkr_live_state, signal_trend)
-                    except Exception as r15e:
-                        logger.warning(f"[R15 evaluation error] {r15e}")
+                        r12_fired = evaluate_r12_for_bot(hwnd, bot, bot_id, signal_trend, ibkr_live_state, is_paused=is_paused, signal_price=signal_price)
+                    except Exception as r12e:
+                        logger.warning(f"[R12 evaluation error] {r12e}")
 
-                    if r15_fired:
-                        # Skip other rules if R15 trade was placed
+                    if r12_fired:
+                        # Skip other rules if R12 trade was placed
                         continue
-
+                    if is_paused:
+                        continue
                     if signal_price is None:
                         continue
 
@@ -400,12 +405,10 @@ async def broadcaster_loop():
                 await evaluate_standalone_r14(ibkr_live_state)
             except Exception as se_err:
                 logger.error(f"[Standalone R14 error]: {se_err}")
-
             try:
-                await evaluate_standalone_r15(ibkr_live_state)
-            except Exception as se_err_r15:
-                logger.error(f"[Standalone R15 error]: {se_err_r15}")
-
+                await evaluate_standalone_r12(ibkr_live_state)
+            except Exception as se_err_r12:
+                logger.error(f"[Standalone R12 error]: {se_err_r12}")
             # Step 4: Construct final broadcast payload
             try:
                 new_trades = trader.core.get_new_trades()

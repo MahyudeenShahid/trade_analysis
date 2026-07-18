@@ -88,6 +88,10 @@ BOT_SETTING_FIELDS = {
     "rule_11_liquidity_enabled": {"type": "bool", "default": 0},
     "rule_11_min_avg_volume": {"type": "int", "default": 0},
     "rule_11_min_tick_density": {"type": "int", "default": 3},
+    # Rule 12 (Trend Scalper) settings
+    "rule_12_enabled": {"type": "bool", "default": 0},
+    "rule_12_buy_threshold": {"type": "float", "default": 0.5},
+    "rule_12_sell_threshold": {"type": "float", "default": 0.0},
     # IBKR live execution parameters
     "live_trading_enabled": {"type": "bool", "default": 0},
     "order_size_type": {"type": "str", "default": "fixed", "choices": ("fixed", "percent", "dollars")},
