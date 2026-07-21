@@ -138,6 +138,18 @@ def evaluate_r14_for_bot(
                     await asyncio.sleep(0.5)
                     _rof(_hwnd, _sig, _sp, _lp, _sp, True, '')
                     try:
+                        from trading.simulator import persist_trade_as_record
+                        persist_trade_as_record({
+                            "direction": _sig,
+                            "ticker": trade_d.get('ticker'),
+                            "price": _sp,
+                            "ts": trade_d.get('ts'),
+                            "bot_id": bot_r.get('id') or bot_r.get('bot_id'),
+                            "bot_name": bot_r.get('name'),
+                        })
+                    except Exception:
+                        pass
+                    try:
                         from db.queries import save_live_order
                         save_live_order({
                             "ts": datetime.now(timezone.utc).isoformat() + "Z",
@@ -452,6 +464,18 @@ def evaluate_r12_for_bot(
                     await asyncio.sleep(0.5)
                     _rf(hw, sg, sp, True, '')
                     try:
+                        from trading.simulator import persist_trade_as_record
+                        persist_trade_as_record({
+                            "direction": sg,
+                            "ticker": td.get('ticker'),
+                            "price": sp,
+                            "ts": td.get('ts'),
+                            "bot_id": br.get('id') or br.get('bot_id'),
+                            "bot_name": br.get('name'),
+                        })
+                    except Exception:
+                        pass
+                    try:
                         from db.queries import save_live_order
                         save_live_order({
                             "ts": datetime.now(timezone.utc).isoformat() + "Z",
@@ -589,6 +613,18 @@ async def evaluate_standalone_r12(ibkr_live_state: dict):
                                 if not live_enabled:
                                     await asyncio.sleep(0.5)
                                     _rf_sa(hw, sg, sp, True, '')
+                                    try:
+                                        from trading.simulator import persist_trade_as_record
+                                        persist_trade_as_record({
+                                            "direction": sg,
+                                            "ticker": td.get('ticker'),
+                                            "price": sp,
+                                            "ts": td.get('ts'),
+                                            "bot_id": br.get('id') or br.get('bot_id'),
+                                            "bot_name": br.get('name'),
+                                        })
+                                    except Exception:
+                                        pass
                                     try:
                                         from db.queries import save_live_order
                                         save_live_order({
