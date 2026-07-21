@@ -415,6 +415,7 @@ async def handle_trade_event(
         profit = None
         buy_order_id = None
         buy_fill_ts = None
+        last_buy = None
         if result.ok and direction.lower() == "sell" and result.fill_price:
             try:
                 from db.queries import get_last_buy_order
@@ -460,6 +461,40 @@ async def handle_trade_event(
             profit=profit,
             buy_order_id=buy_order_id,
         )
+
+        # Write to records table so it shows in the Trade History UI
+        if result.ok and direction.lower() == "sell" and result.fill_price:
+            try:
+                from db.queries import save_observation
+                # Extract meta/name if possible
+                bot_name = bot_row.get("name") or bot_row.get("bot_name") or f"Bot {hwnd}"
+                bot_id = bot_row.get("id") or bot_row.get("bot_id") or str(hwnd)
+                
+                trade_record = {
+                    "ts": result.fill_ts or (dt_import.utcnow().isoformat() + "Z"),
+                    "image_path": None,
+                    "name": bot_name,
+                    "ticker": ticker,
+                    "price": str(result.fill_price),
+                    "trend": "sell",
+                    "buy_price": float(last_buy.get("fill_price")) if last_buy and last_buy.get("fill_price") else None,
+                    "sell_price": float(result.fill_price),
+                    "buy_time": buy_fill_ts,
+                    "sell_time": result.fill_ts or (dt_import.utcnow().isoformat() + "Z"),
+                    "win_reason": "profit" if profit and profit > 0 else "loss",
+                    "bot_id": bot_id,
+                    "bot_name": bot_name,
+                    "meta": {
+                        "hwnd": hwnd,
+                        "ibkr_order_id": result.ibkr_order_id,
+                        "live_trade": True,
+                        "profit": profit,
+                    }
+                }
+                save_observation(trade_record)
+                logger.info(f"[IBKR] Paired live trade persisted to records: {trade_record}")
+            except Exception as rec_err:
+                logger.warning(f"[IBKR] Failed to persist live trade record: {rec_err}")
 
         if result.ok:
             logger.info(
