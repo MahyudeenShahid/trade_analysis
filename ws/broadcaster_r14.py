@@ -7,6 +7,19 @@ from datetime import datetime, timezone
 logger = logging.getLogger(__name__)
 
 
+def _clean_price(val):
+    if val is None:
+        return None
+    try:
+        if isinstance(val, str):
+            cleaned = val.replace('$', '').replace(',', '').strip()
+            cleaned = ''.join(cleaned.split())
+            return float(cleaned) if cleaned else None
+        return float(val)
+    except Exception:
+        return None
+
+
 def evaluate_r14_for_bot(
     hwnd: int,
     bot: dict,
@@ -34,16 +47,15 @@ def evaluate_r14_for_bot(
     _r14_ticker = str(bot_ticker or '').strip().upper()
     _r14_s = _get_r14(int(hwnd))
 
+    parsed_signal_price = _clean_price(signal_price)
+
     if not _r14_ticker or not _r14_s.enabled:
         return False
 
     if is_paused:
         # Update price fallback and broadcast state without triggering orders
-        if _r14_s.last_mid_price is None and signal_price:
-            try:
-                _r14_s.last_mid_price = float(signal_price)
-            except Exception:
-                pass
+        if _r14_s.last_mid_price is None and parsed_signal_price is not None:
+            _r14_s.last_mid_price = parsed_signal_price
         if _r14_ticker in ibkr_live_state:
             ibkr_live_state[_r14_ticker]['r14'] = _r14_fe(int(hwnd))
         return False
@@ -76,12 +88,9 @@ def evaluate_r14_for_bot(
 
     _r14_sig = _maybe_r14(int(hwnd), _r14_history)
 
-    # If order-book history had no points yet, fall back to signal_price
-    if _r14_s.last_mid_price is None and signal_price:
-        try:
-            _r14_s.last_mid_price = float(signal_price)
-        except Exception:
-            pass
+    # If order-book history had no points yet, fall back to parsed_signal_price
+    if _r14_s.last_mid_price is None and parsed_signal_price is not None:
+        _r14_s.last_mid_price = parsed_signal_price
 
     # Always push R14 state into ibkr_live_state
     if _r14_ticker in ibkr_live_state:
@@ -91,7 +100,7 @@ def evaluate_r14_for_bot(
             'ticker': _r14_ticker,
             'prices': [],
             'trend': _r14_s.last_trend,
-            'price': signal_price,
+            'price': parsed_signal_price,
             'last_signal': None,
             'r14': _r14_fe(int(hwnd)),
         }
@@ -101,7 +110,7 @@ def evaluate_r14_for_bot(
         _r14_bot_db = _get_bot_db(int(hwnd)) or {}
         _r14_bot_session = bot if isinstance(bot, dict) else {}
         _r14_bot_row = {**_r14_bot_db, **_r14_bot_session}
-        _r14_sig_price = signal_price or _r14_s.last_mid_price or 0
+        _r14_sig_price = parsed_signal_price or _r14_s.last_mid_price or 0
         _r14_trade = {
             'direction': _r14_sig,
             'ticker': _r14_ticker,
@@ -110,11 +119,7 @@ def evaluate_r14_for_bot(
             'bot_id': bot_id,
             'rule': 'R14',
         }
-        _r14_lp = None
-        try:
-            _r14_lp = float(_r14_sig_price) if _r14_sig_price else None
-        except Exception:
-            pass
+        _r14_lp = _clean_price(_r14_sig_price)
         _r14_record_placed(int(hwnd), _r14_sig, _r14_sig_price or 0, _r14_lp)
         ibkr_live_state[_r14_ticker]['r14'] = _r14_fe(int(hwnd))
 
@@ -235,7 +240,7 @@ async def evaluate_standalone_r14(ibkr_live_state: dict):
                         try:
                             _lp4 = _r14_mid2(_r14_tick4)
                             if _lp4:
-                                _r14_st2.last_mid_price = float(_lp4)
+                                _r14_st2.last_mid_price = _clean_price(_lp4)
                         except Exception:
                             pass
 
@@ -249,7 +254,7 @@ async def evaluate_standalone_r14(ibkr_live_state: dict):
                             'price': _r14_sp4, 'ts': str(_r14t2.time()),
                             'bot_id': str(_r14_hwnd2), 'rule': 'R14',
                         }
-                        _r14_lp4 = float(_r14_sp4) if _r14_sp4 else None
+                        _r14_lp4 = _clean_price(_r14_sp4)
                         _r14_op2(int(_r14_hwnd2), _r14_sig4, _r14_sp4, _r14_lp4)
 
                         async def _r14_fw4(td, br, hw, sg, sp, lp):
