@@ -88,6 +88,7 @@ async def broadcaster_loop():
                     bot_ticker = bot.get('ticker') or screenshot_ticker
                     if not bot_ticker:
                         continue
+                    bot['ticker'] = bot_ticker
                     is_paused = bool(bot.get('trading_paused'))
 
                     bot_id = bot.get('bot_id') or bot.get('id')

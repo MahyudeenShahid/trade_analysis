@@ -360,6 +360,7 @@ async def handle_trade_event(
                 "status": "pending",
                 "trade_ref_id": trade_ref_id,
                 "screenshot_path": screenshot_path,
+                "meta": {"rule": trade_dict.get("rule") or "Standard"},
             }
         )
 
@@ -481,7 +482,7 @@ async def handle_trade_event(
                     "sell_price": float(result.fill_price),
                     "buy_time": buy_fill_ts,
                     "sell_time": result.fill_ts or (dt_import.utcnow().isoformat() + "Z"),
-                    "win_reason": "profit" if profit and profit > 0 else "loss",
+                    "win_reason": trade_dict.get("rule") or ("profit" if profit and profit > 0 else "loss"),
                     "bot_id": bot_id,
                     "bot_name": bot_name,
                     "meta": {
@@ -489,6 +490,7 @@ async def handle_trade_event(
                         "ibkr_order_id": result.ibkr_order_id,
                         "live_trade": True,
                         "profit": profit,
+                        "rule": trade_dict.get("rule") or "Standard",
                     }
                 }
                 save_observation(trade_record)

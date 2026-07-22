@@ -146,6 +146,7 @@ def evaluate_r14_for_bot(
                             "ts": trade_d.get('ts'),
                             "bot_id": bot_r.get('id') or bot_r.get('bot_id'),
                             "bot_name": bot_r.get('name'),
+                            "rule": "R14",
                         })
                     except Exception:
                         pass
@@ -166,6 +167,7 @@ def evaluate_r14_for_bot(
                             "fill_price": _sp,
                             "fill_ts": datetime.now(timezone.utc).isoformat() + "Z",
                             "error_msg": "Paper Trade Simulated",
+                            "meta": {"rule": "R14"},
                         })
                     except Exception:
                         pass
@@ -472,6 +474,7 @@ def evaluate_r12_for_bot(
                             "ts": td.get('ts'),
                             "bot_id": br.get('id') or br.get('bot_id'),
                             "bot_name": br.get('name'),
+                            "rule": "Rule 12",
                         })
                     except Exception:
                         pass
@@ -492,6 +495,7 @@ def evaluate_r12_for_bot(
                             "fill_price": sp,
                             "fill_ts": datetime.now(timezone.utc).isoformat() + "Z",
                             "error_msg": "Paper Trade Simulated (R12)",
+                            "meta": {"rule": "Rule 12"},
                         })
                     except Exception:
                         pass
@@ -622,6 +626,7 @@ async def evaluate_standalone_r12(ibkr_live_state: dict):
                                             "ts": td.get('ts'),
                                             "bot_id": br.get('id') or br.get('bot_id'),
                                             "bot_name": br.get('name'),
+                                            "rule": "Rule 12",
                                         })
                                     except Exception:
                                         pass
@@ -637,6 +642,7 @@ async def evaluate_standalone_r12(ibkr_live_state: dict):
                                             "trade_ref_id": td.get('ts'), "fill_price": sp,
                                             "fill_ts": datetime.now(timezone.utc).isoformat() + "Z",
                                             "error_msg": "Paper Trade Simulated (R12)",
+                                            "meta": {"rule": "Rule 12"},
                                         })
                                     except Exception:
                                         pass
