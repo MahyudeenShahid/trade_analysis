@@ -46,7 +46,7 @@ def persist_trade_as_record(trade: dict):
         sell_price = trade.get("sell_price") or meta.get("exit_price") or None
         buy_time = trade.get("buy_time") or meta.get("entry_time") or None
         sell_time = trade.get("sell_time") or meta.get("exit_time") or None
-        win_reason = trade.get("win_reason") or (meta.get("win_reason") if isinstance(meta, dict) else None)
+        win_reason = trade.get("win_reason") or trade.get("rule") or (meta.get("win_reason") if isinstance(meta, dict) else None) or (meta.get("rule") if isinstance(meta, dict) else None)
         bot_id = trade.get("bot_id") or (meta.get("bot_id") if isinstance(meta, dict) else None)
         bot_name = trade.get("bot_name") or (meta.get("bot_name") if isinstance(meta, dict) else None)
         trade_id = trade.get("trade_id") or (meta.get("trade_id") if isinstance(meta, dict) else None)
